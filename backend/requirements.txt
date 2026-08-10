@@ -8,3 +8,4 @@ alembic==1.14.0
 pgvector==0.3.6
 sentence-transformers==3.3.1
 neo4j==5.27.0
+jellyfish==1.1.3
