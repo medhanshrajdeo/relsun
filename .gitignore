@@ -25,6 +25,9 @@ neo4jdata/
 neo4j/data/
 neo4j/logs/
 
+# GLEIF bulk data downloads (large, refetched on demand, never committed)
+backend/data/gleif/
+
 # OS / editor
 .DS_Store
 Thumbs.db

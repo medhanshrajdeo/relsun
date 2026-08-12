@@ -7,21 +7,9 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.db import engine
-from app.embeddings import embed_text
+from app.embeddings import embed_text, embedding_text
 from app.models import MasterRecord
 from scripts.seed_data import ENTITIES
-
-
-def embedding_text(name: str, domain: str, attributes: dict) -> str:
-    parts = [name, domain]
-    if city := attributes.get("city"):
-        parts.append(city)
-    if country := attributes.get("country"):
-        parts.append(country)
-    if status := attributes.get("status"):
-        parts.append(status)
-    return " | ".join(parts)
-
 
 GRAPH_ONLY_KEYS = {"duplicate_of", "belongs_to"}
 
