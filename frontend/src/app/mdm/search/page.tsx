@@ -1,20 +1,58 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Search as SearchIcon, X, GitCompareArrows, ExternalLink, Waypoints } from "lucide-react";
-import { searchMasterRecords, type Domain, type SearchResult } from "@/lib/api";
+import { listDomains, searchMasterRecords, type Domain, type SearchResult } from "@/lib/api";
 import { DomainBadge, MatchBadge } from "@/components/mdm/Badges";
 
-const DOMAINS: Domain[] = ["Party", "Account", "Supplier", "Location"];
 const DEBOUNCE_MS = 300;
+const MAX_COMPARE = 4;
 
-export default function MasterDataSearchPage() {
-  const [query, setQuery] = useState("");
-  const [domain, setDomain] = useState<Domain | null>(null);
+function SearchPageSkeleton() {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
+        <div className="h-5 w-48 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+      </div>
+      <div className="flex-1 px-6 py-4">
+        <div className="h-24 animate-pulse rounded-lg bg-zinc-100 dark:bg-zinc-900" />
+      </div>
+    </div>
+  );
+}
+
+function SearchContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
+  const [domain, setDomain] = useState<Domain | null>(() => searchParams.get("domain"));
+  const [availableDomains, setAvailableDomains] = useState<Domain[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  // Keep the URL in sync with the current search + filter (replace, not
+  // push, so typing doesn't spam browser history with an entry per
+  // keystroke). This is what lets the graph/compare pages' "back" restore
+  // the exact search that was in progress, instead of a blank search box.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    if (domain) params.set("domain", domain);
+    const qs = params.toString();
+    router.replace(qs ? `/mdm/search?${qs}` : "/mdm/search", { scroll: false });
+  }, [query, domain, router]);
+
+  useEffect(() => {
+    // Filter chips reflect whatever domains this tenant's data actually
+    // has — not a fixed list, since different customers' data won't share
+    // GLEIF's "Party"-only shape.
+    listDomains()
+      .then(setAvailableDomains)
+      .catch(() => setAvailableDomains([]));
+  }, []);
 
   useEffect(() => {
     const trimmed = query.trim();
@@ -55,10 +93,19 @@ export default function MasterDataSearchPage() {
   const toggleSelected = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else if (next.size < MAX_COMPARE) {
+        next.add(id);
+      }
       return next;
     });
+  };
+
+  const goToCompare = () => {
+    const params = new URLSearchParams();
+    selected.forEach((id) => params.append("ids", String(id)));
+    router.push(`/mdm/compare?${params.toString()}`);
   };
 
   const hasQuery = query.trim().length > 0;
@@ -67,9 +114,7 @@ export default function MasterDataSearchPage() {
     <div className="flex h-full flex-col">
       <div className="border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
         <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Master Data Search</h1>
-        <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
-          Search across Party, Account, Supplier, and Location master records.
-        </p>
+        <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">Search across your master records.</p>
       </div>
 
       <div className="space-y-3 border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
@@ -105,7 +150,7 @@ export default function MasterDataSearchPage() {
           >
             All
           </button>
-          {DOMAINS.map((d) => (
+          {availableDomains.map((d) => (
             <button
               key={d}
               onClick={() => setDomain(d)}
@@ -121,7 +166,7 @@ export default function MasterDataSearchPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div className="scrollbar-hide flex-1 overflow-y-auto px-6 py-4">
         {!hasQuery && (
           <div className="flex h-full flex-col items-center justify-center text-center text-zinc-400 dark:text-zinc-600">
             <SearchIcon size={28} className="mb-3" />
@@ -167,7 +212,9 @@ export default function MasterDataSearchPage() {
                       type="checkbox"
                       checked={selected.has(result.id)}
                       onChange={() => toggleSelected(result.id)}
-                      className="rounded border-zinc-300 dark:border-zinc-700"
+                      disabled={!selected.has(result.id) && selected.size >= MAX_COMPARE}
+                      title={!selected.has(result.id) && selected.size >= MAX_COMPARE ? `Compare up to ${MAX_COMPARE} records at a time` : undefined}
+                      className="rounded border-zinc-300 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700"
                     />
                   </td>
                   <td className="py-2.5 pr-4 font-medium text-zinc-900 dark:text-zinc-100">{result.name}</td>
@@ -181,9 +228,9 @@ export default function MasterDataSearchPage() {
                   <td className="py-2.5 pr-4">
                     <div className="flex items-center justify-end gap-1 text-zinc-400">
                       <button
-                        disabled
-                        title="Coming in Phase 4 (View Graph)"
-                        className="cursor-not-allowed rounded-md p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        onClick={() => router.push(`/mdm/graph?id=${result.id}`)}
+                        title="View relationship graph"
+                        className="rounded-md p-1.5 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
                       >
                         <Waypoints size={15} />
                       </button>
@@ -207,9 +254,8 @@ export default function MasterDataSearchPage() {
         <div className="flex items-center justify-between border-t border-zinc-200 bg-zinc-50 px-6 py-3 dark:border-zinc-800 dark:bg-zinc-900">
           <span className="text-sm text-zinc-600 dark:text-zinc-400">{selected.size} records selected</span>
           <button
-            disabled
-            title="Coming in Phase 3 (AI-generated comparison)"
-            className="flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400"
+            onClick={goToCompare}
+            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
           >
             <GitCompareArrows size={15} />
             Compare
@@ -217,5 +263,13 @@ export default function MasterDataSearchPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function MasterDataSearchPage() {
+  return (
+    <Suspense fallback={<SearchPageSkeleton />}>
+      <SearchContent />
+    </Suspense>
   );
 }

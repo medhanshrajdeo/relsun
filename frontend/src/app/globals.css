@@ -24,3 +24,14 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Scrollable but no visible scrollbar track — used where a container may
+   overflow (e.g. sidebar nav with several sections expanded) but a scrollbar
+   would look out of place in the UI. Content stays reachable via scroll. */
+.scrollbar-hide {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Chromium Edge */
+}
