@@ -11,6 +11,7 @@ import {
   type CompareResponse,
 } from "@/lib/api";
 import { DomainBadge, fieldRowClass } from "@/components/mdm/Badges";
+import { Markdown } from "@/components/mdm/Markdown";
 
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "—";
@@ -142,7 +143,7 @@ function CompareContent() {
                 )}
                 {!summaryLoading && summaryUnavailable && (
                   <p className="text-sm text-zinc-400 dark:text-zinc-600">
-                    AI summary isn&apos;t available yet — no Foundry project is configured in this environment.
+                    AI summary isn&apos;t available yet — no Anthropic API key is configured in this environment.
                   </p>
                 )}
                 {!summaryLoading && summaryError && (
@@ -150,7 +151,9 @@ function CompareContent() {
                 )}
                 {!summaryLoading && summary && (
                   <>
-                    <p className="text-sm text-zinc-700 dark:text-zinc-300">{summary}</p>
+                    <div className="text-sm text-zinc-700 dark:text-zinc-300">
+                      <Markdown text={summary} />
+                    </div>
                     <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-600">
                       AI-drafted from the match analysis below — a draft for review, not a decision. Verify against
                       the data itself before acting on it.
@@ -223,8 +226,8 @@ function CompareContent() {
         <div className="flex items-center justify-between border-t border-zinc-200 bg-zinc-50 px-6 py-3 dark:border-zinc-800 dark:bg-zinc-900">
           <span className="flex items-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400">
             <ShieldCheck size={15} className="text-zinc-400" />
-            Match scores and rationale are computed locally. Only the AI summary above is sent to your configured
-            Foundry agent, and it never writes back to this data.
+            Match scores and rationale are computed locally. Only the AI summary above is sent to the Compare
+            summary agent, and it never writes back to this data.
           </span>
           <button
             disabled

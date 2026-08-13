@@ -98,7 +98,10 @@ def _rationale(a: MasterRecord, b: MasterRecord, score: float, signals: dict, ve
 
 
 def compare_records(session: Session, ids: list[int]) -> CompareResponse:
-    records = session.query(MasterRecord).filter(MasterRecord.id.in_(ids)).all()
+    # deleted_at excluded, same as search.py — comparing a soft-deleted
+    # record would be misleading, and a missing id already surfaces as
+    # the same "not found" error a truly nonexistent id would.
+    records = session.query(MasterRecord).filter(MasterRecord.id.in_(ids), MasterRecord.deleted_at.is_(None)).all()
     by_id = {r.id: r for r in records}
     missing = [i for i in ids if i not in by_id]
     if missing:
@@ -143,3 +146,36 @@ def compare_records(session: Session, ids: list[int]) -> CompareResponse:
         fields=fields,
         pairwise=pairwise,
     )
+
+
+def render_compare_facts(compare: CompareResponse) -> str:
+    """Render this module's deterministic output as plain text. Shared by
+    the compare_summary agent (drafts a narrative over it) and the Compare
+    Agent's compare_master_data tool (returns it directly as the
+    deterministic verdict) — one rendering, so the two never drift."""
+    names_by_id = {r.id: r.name for r in compare.records}
+    lines = [f"Records being compared: {', '.join(names_by_id.values())}", ""]
+
+    conflicts = [f for f in compare.fields if f.status == "conflict"]
+    partials = [f for f in compare.fields if f.status == "partial"]
+    if conflicts:
+        lines.append("Conflicting fields (values disagree across records):")
+        for f in conflicts:
+            values = ", ".join(f"{k}={v}" for k, v in f.values.items() if v is not None)
+            lines.append(f"  - {f.label}: {values}")
+    if partials:
+        lines.append("Partially present fields (missing on some records):")
+        for f in partials:
+            values = ", ".join(f"{k}={v}" for k, v in f.values.items() if v is not None)
+            lines.append(f"  - {f.label}: {values}")
+    if not conflicts and not partials:
+        lines.append("All comparable fields match across records.")
+
+    lines.append("")
+    lines.append("Pairwise match analysis:")
+    for p in compare.pairwise:
+        a = names_by_id.get(p.record_a_id, str(p.record_a_id))
+        b = names_by_id.get(p.record_b_id, str(p.record_b_id))
+        lines.append(f"  - {a} vs {b}: {p.verdict} ({p.score:.0%}) — {p.rationale}")
+
+    return "\n".join(lines)

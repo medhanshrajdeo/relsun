@@ -117,6 +117,68 @@ export type GraphResponse = {
   truncated: boolean;
 };
 
+export type ConciergeChatTurn = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export class ConciergeUnavailableError extends Error {}
+
+export async function sendConciergeChat(prompt: string, history: ConciergeChatTurn[]): Promise<string> {
+  const res = await fetch(`${API_BASE_URL}/concierge/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, history }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const message = body?.detail ?? `Concierge failed: ${res.status}`;
+    if (res.status === 503) throw new ConciergeUnavailableError(message);
+    throw new Error(message);
+  }
+  const data = await res.json();
+  return data.response;
+}
+
+export type MasterDataRequestStatus = "pending" | "approved" | "rejected" | "published";
+
+export type MasterDataRequest = {
+  id: number;
+  domain: Domain;
+  request_type: "create" | "update" | "delete";
+  target_record_id: number | null;
+  proposed_attributes: Record<string, unknown> | null;
+  status: MasterDataRequestStatus;
+  decision_note: string | null;
+  submitted_at: string;
+  decided_at: string | null;
+};
+
+export async function listRequests(status?: MasterDataRequestStatus): Promise<MasterDataRequest[]> {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  const qs = params.toString();
+  const res = await fetch(`${API_BASE_URL}/requests${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(`Failed to load requests: ${res.status}`);
+  return res.json();
+}
+
+async function decideRequest(id: number, action: "approve" | "reject", note?: string): Promise<MasterDataRequest> {
+  const res = await fetch(`${API_BASE_URL}/requests/${id}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision_note: note ?? null }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? `${action} failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export const approveRequest = (id: number, note?: string) => decideRequest(id, "approve", note);
+export const rejectRequest = (id: number, note?: string) => decideRequest(id, "reject", note);
+
 export async function fetchRelationshipGraph(id: number, hops = 2): Promise<GraphResponse> {
   const res = await fetch(`${API_BASE_URL}/graph/${id}?hops=${hops}`);
   if (!res.ok) {

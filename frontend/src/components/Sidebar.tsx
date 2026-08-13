@@ -55,7 +55,7 @@ const NAV: NavSection[] = [
     icon: Database,
     children: [
       { label: "Master Data Search", href: "/mdm/search" },
-      { label: "Master Data Requests" },
+      { label: "Master Data Requests", href: "/mdm/requests" },
     ],
   },
 ];

@@ -132,7 +132,7 @@ def _score_candidate(
 def search_master_records(
     session: Session, query: str, domain: str | None = None
 ) -> list[SearchResult]:
-    base = session.query(MasterRecord)
+    base = session.query(MasterRecord).filter(MasterRecord.deleted_at.is_(None))
     if domain:
         base = base.filter(MasterRecord.domain == domain)
 

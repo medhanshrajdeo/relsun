@@ -14,14 +14,13 @@ class Settings(BaseSettings):
     neo4j_password: str = ""
     backend_port: int = 8000
 
-    # Microsoft Foundry (Azure AI Agents) project used by the Compare summary
-    # agent. Auth is via DefaultAzureCredential (az login, or an
-    # AZURE_CLIENT_ID/AZURE_CLIENT_SECRET/AZURE_TENANT_ID service principal) —
-    # there's no key setting here because Foundry Agents doesn't take a raw
-    # API key. Left unset in dev until a project exists; the agent module
-    # degrades to a clear "not configured" error rather than failing at import.
-    foundry_project_endpoint: str | None = None
-    foundry_model_deployment: str = "gpt-4o-mini"
+    # Anthropic API key used by all Relsun agents (Compare summary today,
+    # the Master Data agent hierarchy next — see the Agent Architecture
+    # Pivot addendum in CONFIGURABLE_WORKFLOWS_AGENTS.md). Left unset in dev
+    # until a real key is provisioned; agent modules degrade to a clear
+    # "not configured" error rather than failing at import.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-5"
 
 
 settings = Settings()

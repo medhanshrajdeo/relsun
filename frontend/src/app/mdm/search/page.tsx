@@ -1,8 +1,9 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search as SearchIcon, X, GitCompareArrows, ExternalLink, Waypoints } from "lucide-react";
+import { Search as SearchIcon, Sparkles, X, GitCompareArrows, ExternalLink, Waypoints } from "lucide-react";
 import { listDomains, searchMasterRecords, type Domain, type SearchResult } from "@/lib/api";
 import { DomainBadge, MatchBadge } from "@/components/mdm/Badges";
 
@@ -181,11 +182,18 @@ function SearchContent() {
         )}
 
         {hasQuery && !error && !loading && results.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center text-center text-zinc-400 dark:text-zinc-600">
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-zinc-400 dark:text-zinc-600">
             <p className="text-sm">
               No matches for <span className="font-medium text-zinc-600 dark:text-zinc-400">&ldquo;{query}&rdquo;</span>
             </p>
-            <p className="mt-1 text-xs">Try a different spelling, or check the domain filter.</p>
+            <p className="text-xs">Try a different spelling, or check the domain filter.</p>
+            <Link
+              href={`/?prompt=${encodeURIComponent(`Create a new Party record named "${query}"`)}`}
+              className="mt-1 flex items-center gap-1.5 rounded-full border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-blue-900 dark:hover:bg-blue-950/30 dark:hover:text-blue-400"
+            >
+              <Sparkles size={12} />
+              Create &ldquo;{query}&rdquo; as a new Party record
+            </Link>
           </div>
         )}
 

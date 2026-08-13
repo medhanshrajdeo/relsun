@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -42,6 +43,41 @@ class CompareResponse(BaseModel):
 
 class CompareSummaryResponse(BaseModel):
     summary: str
+
+
+class ConciergeChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ConciergeChatRequest(BaseModel):
+    prompt: str
+    # Client-held conversation history (the frontend resends it each turn) —
+    # deliberately not server-side persisted memory. Per-agent learning/
+    # persistence is an explicitly open design question in the Agent
+    # Architecture Pivot addendum; this is just enough continuity for a
+    # real back-and-forth chat without prematurely solving that.
+    history: list[ConciergeChatTurn] = []
+
+
+class ConciergeChatResponse(BaseModel):
+    response: str
+
+
+class MasterDataRequestOut(BaseModel):
+    id: int
+    domain: str
+    request_type: Literal["create", "update", "delete"]
+    target_record_id: int | None
+    proposed_attributes: dict[str, Any] | None
+    status: Literal["pending", "approved", "rejected", "published"]
+    decision_note: str | None
+    submitted_at: datetime
+    decided_at: datetime | None
+
+
+class DecideRequestBody(BaseModel):
+    decision_note: str | None = None
 
 
 class GraphNode(BaseModel):
