@@ -61,8 +61,18 @@ class Tool:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[..., str]
+    # Anthropic-hosted server tools (web search, code execution, ...) run on
+    # Anthropic's infrastructure and don't take name/description/input_schema
+    # — they take a "type" plus tool-specific params instead. When set, this
+    # is sent to the API verbatim in place of the usual schema, and `handler`
+    # is never called: the run() loop only dispatches blocks of type
+    # "tool_use" (a client tool awaiting a result), never "server_tool_use"
+    # (already resolved server-side within the same response).
+    raw_schema: dict[str, Any] | None = None
 
     def to_schema(self) -> dict[str, Any]:
+        if self.raw_schema is not None:
+            return self.raw_schema
         return {"name": self.name, "description": self.description, "input_schema": self.input_schema}
 
 
@@ -72,6 +82,7 @@ class Agent:
     instructions: str
     tools: list[Tool] = field(default_factory=list)
     model: str = ""
+    max_tokens: int = 1024
 
     def run(
         self,
@@ -98,11 +109,18 @@ class Agent:
         for _ in range(MAX_TOOL_TURNS):
             response = client.messages.create(
                 model=model,
-                max_tokens=1024,
+                max_tokens=self.max_tokens,
                 system=self.instructions,
                 tools=tool_schemas,
                 messages=messages,
             )
+            # A server tool (e.g. web search) can hit its own iteration limit
+            # mid-turn with no client tool awaiting a result — Claude hasn't
+            # produced a final answer yet, just paused. Re-send as-is so it
+            # can continue; not the same thing as a client tool_use turn.
+            if response.stop_reason == "pause_turn":
+                messages.append({"role": "assistant", "content": _serialize_content(response.content)})
+                continue
 
             if response.stop_reason != "tool_use":
                 return _text_of(response, agent_name=self.name)
@@ -141,6 +159,12 @@ def _serialize_content(content: list[Any]) -> list[dict[str, Any]]:
             blocks.append({"type": "text", "text": block.text})
         elif block.type == "tool_use":
             blocks.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+        elif hasattr(block, "model_dump"):
+            # Server-tool blocks (server_tool_use, web_search_tool_result, ...)
+            # — round-trip verbatim so the API sees the same content it sent.
+            blocks.append(block.model_dump())
+        else:
+            raise TypeError(f"Cannot serialize content block of unexpected type: {block.type!r}")
     return blocks
 
 

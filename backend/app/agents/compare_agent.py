@@ -5,7 +5,7 @@ AGENT_INVENTORY.md and the Compare Agent spec agreed 2026-08-12.
 
 Accuracy note: the verdict this agent surfaces measures name/field
 similarity only (Jaro-Winkler, trigram, vector cosine, phonetic) — it has
-no access to the Neo4j relationship graph, so it must never claim two
+no access to the relationship graph (relationship_edges, app/graph.py), so it must never claim two
 entities are related through ownership or any other relationship. That's
 the future Recommendation sub-agent's job (Party/Item/Location Request
 branch, unbuilt), not this one's — the instructions below say so

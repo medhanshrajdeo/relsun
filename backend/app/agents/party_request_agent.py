@@ -6,17 +6,22 @@ ever write to master_records. That write only happens via
 requests.approve_request(), called from POST /requests/{id}/approve when
 a human clicks Approve in the Review Queue, never from agent code.
 
-No Recommendation Agent and no Search/Compare tools in this pass — see
-the build plan's "Key design decision" for why (the real
-Recommendation Agent is a graph-aware, sales-acceleration feature that
-needs its own scoping, not a name-similarity wrapper bolted on here).
-Name-to-ID resolution for update/delete is the Master Data Agent's job
-(it holds Search), the same pattern already used for Compare.
+No Search/Compare tools in this pass — name-to-ID resolution for
+update/delete is the Master Data Agent's job (it holds Search), the same
+pattern already used for Compare.
+
+Recommendation sub-agent wired in 2026-08-20: web-search-only enrichment
+for now (see recommendation_agent.py's own docstring for exactly what
+that does and doesn't cover yet — no internal graph, no D&B, no
+ownership-chain reasoning). The full graph-aware, sales-acceleration
+Recommendation Agent from AGENT_INVENTORY.md is still its own future
+scoping task, not delivered by this pass.
 """
 
 from sqlalchemy.orm import Session
 
 from app.agents.framework import Agent, Tool
+from app.agents.recommendation_agent import get_recommendation_tool
 from app.requests import (
     RequestValidationError,
     get_request,
@@ -55,7 +60,22 @@ PARTY_REQUEST_INSTRUCTIONS = (
     "questions about a request's current state; you cannot change that "
     "state yourself, only report it. Beyond an exact LEI match, you have "
     "no way to check whether a proposed record might be a duplicate of "
-    "something existing — don't claim to have checked beyond that."
+    "something existing — don't claim to have checked beyond that. "
+    "Whenever you mention a record that has a known id — a "
+    "target_record_id for an update/delete, or a record a duplicate LEI "
+    "check surfaced — format it as a markdown link in the exact form "
+    "[Name](record:ID) if you know its name, or [Record ID](record:ID) if "
+    "you only know the id, so the person reading your reply can click "
+    "straight through to it."
+    "\n\nFor a CREATE, if the user gives just a company name and you think "
+    "a quick web lookup would help (e.g. they don't know the country, or "
+    "you want to double check an address), you may call get_recommendation "
+    "with that name. It returns a suggestion from a live web search, not a "
+    "verified fact — offer it to the user as something to confirm or "
+    "correct ('I found X, does that look right?'), never fill it in "
+    "silently or submit it without them agreeing. Don't call it for every "
+    "request — only when it would actually save the user a step, e.g. "
+    "they haven't already given you the field it would find."
 )
 
 
@@ -65,6 +85,7 @@ def _submit_handler(
     proposed_attributes: dict | None = None,
     *,
     session: Session,
+    current_user_id: int | None = None,
     **_ignored,
 ) -> str:
     try:
@@ -74,6 +95,7 @@ def _submit_handler(
             request_type=request_type,
             target_record_id=target_record_id,
             proposed_attributes=proposed_attributes,
+            submitted_by_id=current_user_id,
         )
     except RequestValidationError as exc:
         return f"Could not submit: {exc}"
@@ -140,5 +162,5 @@ check_request_status_tool = Tool(
 party_request_agent = Agent(
     name="party-request",
     instructions=PARTY_REQUEST_INSTRUCTIONS,
-    tools=[submit_party_request_tool, check_request_status_tool],
+    tools=[submit_party_request_tool, check_request_status_tool, get_recommendation_tool],
 )

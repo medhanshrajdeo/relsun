@@ -20,13 +20,14 @@ instructions plus what a given prompt actually contains.
 
 from app.agents.compare_agent import compare_agent
 from app.agents.framework import Agent, agent_as_tool
+from app.agents.graph_context_agent import graph_context_agent
 from app.agents.party_request_agent import party_request_agent
 from app.agents.search_agent import search_agent
 
 MASTER_DATA_INSTRUCTIONS = (
     "You are the Master Data Handling Agent for an MDM (master data "
     "management) platform, covering the Party, Item, and Location "
-    "domains. You have three sub-agents available: "
+    "domains. You have four sub-agents available: "
     "\n\nmaster_data_search — looks up whether an entity already exists "
     "(search by name, fuzzy/typo-tolerant, optionally filtered to a "
     "domain). "
@@ -41,10 +42,25 @@ MASTER_DATA_INSTRUCTIONS = (
     "and delete need a record ID, not just a name: if the user only gave "
     "a name, use master_data_search to resolve it first, the same way "
     "you do for compare. A create needs no prior ID. "
+    "\n\nmaster_data_graph_context — use this when the user is clearly "
+    "asking about relationships or entities in a relationship graph "
+    "currently on their screen (e.g. 'why is this connected to X', "
+    "'summarize this', 'which of these is the parent') rather than asking "
+    "you to look something up fresh. It only knows the exact view the "
+    "user currently has open, not the full graph — if the user's question "
+    "reaches beyond that, prefer master_data_search or say plainly the "
+    "answer isn't in the current view. "
     "\n\nNone of your sub-agents can approve or reject a pending request "
     "— that only happens when a human reviews it in the Review Queue "
     "screen. If asked to approve/reject/finalize something, say plainly "
-    "that has to happen there, not here."
+    "that has to happen there, not here. "
+    "\n\nA sub-agent's reply may already contain markdown links in the "
+    "form [Name](record:ID) — that's how a specific record gets turned "
+    "into something clickable for the person you're relaying to. Preserve "
+    "that exact [Name](record:ID) formatting for any record you mention "
+    "in your own reply, whether you're passing a sub-agent's link through "
+    "unchanged or restating a record you know the id of yourself — never "
+    "flatten it to plain text like 'Name (ID: 123)'."
 )
 
 master_data_search_tool = agent_as_tool(
@@ -72,8 +88,23 @@ master_data_request_tool = agent_as_tool(
     ),
 )
 
+master_data_graph_context_tool = agent_as_tool(
+    graph_context_agent,
+    name="master_data_graph_context",
+    description=(
+        "Hand off to the Graph Context Agent for questions about the "
+        "relationship graph currently displayed on the user's screen — "
+        "what's connected to what, and why."
+    ),
+)
+
 master_data_agent = Agent(
     name="master-data-handling",
     instructions=MASTER_DATA_INSTRUCTIONS,
-    tools=[master_data_search_tool, master_data_compare_tool, master_data_request_tool],
+    tools=[
+        master_data_search_tool,
+        master_data_compare_tool,
+        master_data_request_tool,
+        master_data_graph_context_tool,
+    ],
 )

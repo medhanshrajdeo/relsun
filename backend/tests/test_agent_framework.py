@@ -142,6 +142,54 @@ def test_agent_as_tool_propagates_client_and_context():
     assert len(client.messages.calls) == 4
 
 
+def test_raw_schema_tool_sent_verbatim_and_never_dispatched():
+    called = []
+    server_tool = Tool(
+        name="web_search",
+        description="ignored",
+        input_schema={},
+        handler=lambda **_ignored: called.append("should not run"),
+        raw_schema={"type": "web_search_20260209", "name": "web_search", "max_uses": 5},
+    )
+    client = make_client([FakeResponse(content=[FakeTextBlock("found it")], stop_reason="end_turn")])
+    agent = Agent(name="test-agent", instructions="Search the web.", tools=[server_tool])
+
+    result = agent.run("look something up", client=client)
+
+    assert result == "found it"
+    assert called == []
+    sent_tools = client.messages.calls[0]["tools"]
+    assert sent_tools == [{"type": "web_search_20260209", "name": "web_search", "max_uses": 5}]
+
+
+def test_pause_turn_resends_and_continues_without_treating_as_final():
+    client = make_client(
+        [
+            FakeResponse(content=[FakeTextBlock("still searching...")], stop_reason="pause_turn"),
+            FakeResponse(content=[FakeTextBlock("final answer")], stop_reason="end_turn"),
+        ]
+    )
+    agent = Agent(name="test-agent", instructions="Search the web.", tools=[])
+
+    result = agent.run("look something up", client=client)
+
+    assert result == "final answer"
+    assert len(client.messages.calls) == 2
+    # the paused turn's content was re-sent as the assistant's prior turn
+    second_call_messages = client.messages.calls[1]["messages"]
+    assert second_call_messages[-1]["role"] == "assistant"
+    assert second_call_messages[-1]["content"] == [{"type": "text", "text": "still searching..."}]
+
+
+def test_custom_max_tokens_is_used_on_every_request():
+    client = make_client([FakeResponse(content=[FakeTextBlock("hi")], stop_reason="end_turn")])
+    agent = Agent(name="test-agent", instructions="Be nice.", max_tokens=4096)
+
+    agent.run("hi", client=client)
+
+    assert client.messages.calls[0]["max_tokens"] == 4096
+
+
 def test_turn_cap_raises_instead_of_looping_forever():
     responses = [
         FakeResponse(
