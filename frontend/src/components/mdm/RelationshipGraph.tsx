@@ -12,6 +12,7 @@ import {
 } from "d3-force";
 import type { GraphEdge, GraphNode, GraphResponse } from "@/lib/api";
 import { domainNodeFill } from "./Badges";
+import { GraphNodeDetail } from "./GraphNodeDetail";
 
 type SimNode = GraphNode & SimulationNodeDatum;
 type SimLink = {
@@ -82,20 +83,23 @@ function edgeEndpoint(source: SimNode, target: SimNode): { x: number; y: number 
 
 interface Props {
   data: GraphResponse;
-  onNodeClick?: (id: number) => void;
+  onRecenter: (id: number) => void;
 }
 
-export function RelationshipGraph({ data, onNodeClick }: Props) {
+export function RelationshipGraph({ data, onRecenter }: Props) {
   const [nodes, setNodes] = useState<SimNode[]>([]);
   const [links, setLinks] = useState<SimLink[]>([]);
   const [hoveredId, setHoveredId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 });
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const simulationRef = useRef<Simulation<SimNode, undefined> | null>(null);
   const draggingRef = useRef<{ id: number; moved: boolean; startX: number; startY: number } | null>(null);
-  const panningRef = useRef<{ startX: number; startY: number; origin: { x: number; y: number } } | null>(null);
+  const panningRef = useRef<{ startX: number; startY: number; origin: { x: number; y: number }; moved: boolean } | null>(
+    null
+  );
 
   // The graph fills whatever space its container actually has (a fixed
   // viewBox just letterboxed instead of using the extra room fullscreen
@@ -113,6 +117,10 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    setSelectedId(null);
+  }, [data]);
 
   useEffect(() => {
     const simNodes: SimNode[] = data.nodes.map((n) => ({
@@ -185,6 +193,52 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
   const isUniform = links.length > 0 && distinctTypes.size === 1;
   const isDense = links.length > 15;
 
+  // Degree within *this* view only (the loaded hop radius), not the
+  // record's true total connection count — cheap client-side count over
+  // edges already on hand, no extra request.
+  const degreeById = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const link of links) {
+      const s = asNode(link.source)?.id ?? (typeof link.source === "number" ? link.source : null);
+      const t = asNode(link.target)?.id ?? (typeof link.target === "number" ? link.target : null);
+      if (s != null) counts.set(s, (counts.get(s) ?? 0) + 1);
+      if (t != null) counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+    return counts;
+  }, [links]);
+
+  const selectedNode = useMemo(
+    () => (selectedId != null ? (data.nodes.find((n) => n.id === selectedId) ?? null) : null),
+    [selectedId, data.nodes]
+  );
+  const domainsPresent = useMemo(
+    () => Array.from(new Set(data.nodes.map((n) => n.domain).filter((d): d is string => Boolean(d)))),
+    [data.nodes]
+  );
+
+  // Dimming shows the selected node's immediate neighborhood, not just the
+  // node itself — matching how the amber "existing customer" callout etc.
+  // already reads relationships one hop at a time.
+  const selectionNeighborhood = useMemo(() => {
+    if (selectedId == null) return null;
+    const ids = new Set<number>([selectedId]);
+    for (const link of links) {
+      const s = asNode(link.source)?.id;
+      const t = asNode(link.target)?.id;
+      if (s === selectedId && t != null) ids.add(t);
+      if (t === selectedId && s != null) ids.add(s);
+    }
+    return ids;
+  }, [selectedId, links]);
+
+  const nodeTouchesSelection = (id: number) => selectionNeighborhood == null || selectionNeighborhood.has(id);
+  const linkTouchesSelection = (link: SimLink) => {
+    if (selectedId == null) return true;
+    const s = asNode(link.source)?.id;
+    const t = asNode(link.target)?.id;
+    return s === selectedId || t === selectedId;
+  };
+
   const toGraphCoords = (clientX: number, clientY: number, svg: SVGSVGElement) => {
     const rect = svg.getBoundingClientRect();
     return {
@@ -218,10 +272,13 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
     }
     const panning = panningRef.current;
     if (panning) {
+      const dx = e.clientX - panning.startX;
+      const dy = e.clientY - panning.startY;
+      if (Math.abs(dx) > CLICK_DRAG_THRESHOLD || Math.abs(dy) > CLICK_DRAG_THRESHOLD) panning.moved = true;
       setTransform((prev) => ({
         ...prev,
-        x: panning.origin.x + (e.clientX - panning.startX),
-        y: panning.origin.y + (e.clientY - panning.startY),
+        x: panning.origin.x + dx,
+        y: panning.origin.y + dy,
       }));
     }
   };
@@ -232,18 +289,20 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
     simulationRef.current?.alphaTarget(0);
     node.fx = null;
     node.fy = null;
-    if (dragging && !dragging.moved && !node.is_anchor && onNodeClick) {
-      onNodeClick(node.id);
+    if (dragging && !dragging.moved) {
+      setSelectedId((prev) => (prev === node.id ? null : node.id));
     }
   };
 
   const handleBackgroundPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     (e.target as Element).setPointerCapture(e.pointerId);
-    panningRef.current = { startX: e.clientX, startY: e.clientY, origin: { x: transform.x, y: transform.y } };
+    panningRef.current = { startX: e.clientX, startY: e.clientY, origin: { x: transform.x, y: transform.y }, moved: false };
   };
 
   const handleBackgroundPointerUp = () => {
+    const panning = panningRef.current;
     panningRef.current = null;
+    if (panning && !panning.moved) setSelectedId(null);
   };
 
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
@@ -256,13 +315,36 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
   };
 
   return (
-    <div ref={containerRef} className="relative h-full w-full">
-      {isUniform && (
-        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-md bg-zinc-50/90 px-2.5 py-1 text-xs text-zinc-600 shadow-sm dark:bg-zinc-950/90 dark:text-zinc-400">
-          All connections: <span className="font-medium text-zinc-800 dark:text-zinc-200">{baseLabel(links[0].type)}</span>
-          <span className="text-zinc-400 dark:text-zinc-600"> · hover an edge for detail</span>
-        </div>
-      )}
+    <div className="flex h-full w-full gap-3">
+      <div ref={containerRef} className="relative h-full min-w-0 flex-1">
+      <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-col gap-1.5 rounded-md bg-zinc-50/90 px-2.5 py-2 text-xs text-zinc-600 shadow-sm dark:bg-zinc-950/90 dark:text-zinc-400">
+        {isUniform ? (
+          <span>
+            All connections: <span className="font-medium text-zinc-800 dark:text-zinc-200">{baseLabel(links[0].type)}</span>
+            <span className="text-zinc-400 dark:text-zinc-600"> · hover an edge for detail</span>
+          </span>
+        ) : (
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">Legend</span>
+        )}
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-zinc-900 bg-zinc-300 dark:border-zinc-100" />
+          Anchor (centered entity)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-3 w-3 rounded-full border-2 border-dashed border-amber-400" />
+          Existing customer
+        </span>
+        {domainsPresent.length > 0 && (
+          <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            {domainsPresent.map((d) => (
+              <span key={d} className="flex items-center gap-1">
+                <span className={`inline-block h-2 w-2 rounded-full ${domainNodeFill(d)}`} />
+                {d}
+              </span>
+            ))}
+          </span>
+        )}
+      </div>
       <svg
         viewBox={`0 0 ${size.width} ${size.height}`}
         className="h-full w-full touch-none select-none rounded-lg border border-zinc-200 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-950/50"
@@ -286,11 +368,12 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
             const midY = (source.y! + target.y!) / 2;
             const end = edgeEndpoint(source, target);
             const touchesHovered = source.id === hoveredId || target.id === hoveredId;
+            const inFocus = linkTouchesSelection(link);
             const showLabel = isUniform
               ? touchesHovered
               : !isDense || source.is_anchor || target.is_anchor || touchesHovered;
             return (
-              <g key={i}>
+              <g key={i} opacity={inFocus ? 1 : 0.15}>
                 <line
                   x1={source.x}
                   y1={source.y}
@@ -320,11 +403,14 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
             if (node.x == null || node.y == null) return null;
             const r = nodeRadius(node);
             const isHovered = hoveredId === node.id;
+            const isSelected = selectedId === node.id;
+            const inFocus = nodeTouchesSelection(node.id);
             return (
               <g
                 key={node.id}
                 transform={`translate(${node.x},${node.y})`}
                 className="cursor-pointer"
+                opacity={inFocus ? 1 : 0.2}
                 onPointerDown={(e) => handleNodePointerDown(e, node)}
                 onPointerUp={(e) => handleNodePointerUp(e, node)}
                 onPointerEnter={() => setHoveredId(node.id)}
@@ -335,8 +421,8 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
                 )}
                 <circle
                   r={r}
-                  className={`${domainNodeFill(node.domain)} ${node.is_anchor ? "stroke-zinc-900 dark:stroke-zinc-100" : "stroke-white dark:stroke-zinc-950"}`}
-                  strokeWidth={node.is_anchor ? 2.5 : 1.5}
+                  className={`${domainNodeFill(node.domain)} ${node.is_anchor ? "stroke-zinc-900 dark:stroke-zinc-100" : "stroke-white dark:stroke-zinc-950"} ${isSelected ? "stroke-blue-500 dark:stroke-blue-400" : ""}`}
+                  strokeWidth={isSelected ? 3 : node.is_anchor ? 2.5 : 1.5}
                   opacity={isHovered ? 1 : 0.92}
                 />
                 <title>{node.name ?? "Unknown"}{node.existing_customer ? " — Existing Customer" : ""}</title>
@@ -358,6 +444,15 @@ export function RelationshipGraph({ data, onNodeClick }: Props) {
         </g>
       </g>
       </svg>
+      </div>
+      {selectedNode && (
+        <GraphNodeDetail
+          node={selectedNode}
+          degree={degreeById.get(selectedNode.id) ?? 0}
+          onClose={() => setSelectedId(null)}
+          onRecenter={() => onRecenter(selectedNode.id)}
+        />
+      )}
     </div>
   );
 }

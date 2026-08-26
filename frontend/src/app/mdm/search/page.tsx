@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Search as SearchIcon, Sparkles, X, GitCompareArrows, ExternalLink, Waypoints } from "lucide-react";
 import { listDomains, searchMasterRecords, type Domain, type SearchResult } from "@/lib/api";
 import { DomainBadge, MatchBadge } from "@/components/mdm/Badges";
+import { useRecordModal } from "@/lib/recordModal";
 
 const DEBOUNCE_MS = 300;
 const MAX_COMPARE = 4;
@@ -26,6 +27,7 @@ function SearchPageSkeleton() {
 function SearchContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { open: openRecord } = useRecordModal();
   const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
   const [domain, setDomain] = useState<Domain | null>(() => searchParams.get("domain"));
   const [availableDomains, setAvailableDomains] = useState<Domain[]>([]);
@@ -143,7 +145,7 @@ function SearchContent() {
           <span className="mr-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">Filter:</span>
           <button
             onClick={() => setDomain(null)}
-            className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+            className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
               domain === null
                 ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                 : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
@@ -155,7 +157,7 @@ function SearchContent() {
             <button
               key={d}
               onClick={() => setDomain(d)}
-              className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+              className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
                 domain === d
                   ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                   : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
@@ -238,14 +240,16 @@ function SearchContent() {
                       <button
                         onClick={() => router.push(`/mdm/graph?id=${result.id}`)}
                         title="View relationship graph"
-                        className="rounded-md p-1.5 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+                        aria-label={`View relationship graph for ${result.name}`}
+                        className="rounded-md p-1.5 transition-colors duration-150 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
                       >
                         <Waypoints size={15} />
                       </button>
                       <button
-                        disabled
-                        title="Coming in a later phase (Open record)"
-                        className="cursor-not-allowed rounded-md p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        onClick={() => openRecord(result.id)}
+                        title="Open record"
+                        aria-label={`Open record for ${result.name}`}
+                        className="rounded-md p-1.5 transition-colors duration-150 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
                       >
                         <ExternalLink size={15} />
                       </button>
@@ -263,7 +267,7 @@ function SearchContent() {
           <span className="text-sm text-zinc-600 dark:text-zinc-400">{selected.size} records selected</span>
           <button
             onClick={goToCompare}
-            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50"
           >
             <GitCompareArrows size={15} />
             Compare

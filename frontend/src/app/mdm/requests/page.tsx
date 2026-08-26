@@ -10,6 +10,7 @@ import {
   type MasterDataRequestStatus,
 } from "@/lib/api";
 import { DomainBadge } from "@/components/mdm/Badges";
+import { useRecordModal } from "@/lib/recordModal";
 
 const STATUS_FILTERS: { label: string; value: MasterDataRequestStatus | "all" }[] = [
   { label: "Pending", value: "pending" },
@@ -52,6 +53,7 @@ function describeChange(request: MasterDataRequest): string {
 }
 
 export default function RequestsPage() {
+  const { open: openRecord } = useRecordModal();
   const [filter, setFilter] = useState<MasterDataRequestStatus | "all">("pending");
   const [requests, setRequests] = useState<MasterDataRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,7 +97,7 @@ export default function RequestsPage() {
         </div>
         <button
           onClick={load}
-          className="flex items-center gap-1.5 rounded-md p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+          className="flex items-center gap-1.5 rounded-md p-2 text-zinc-500 transition-colors duration-150 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
           aria-label="Refresh"
         >
           <RefreshCw size={15} />
@@ -107,7 +109,7 @@ export default function RequestsPage() {
           <button
             key={f.value}
             onClick={() => setFilter(f.value)}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
               filter === f.value
                 ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                 : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
@@ -146,6 +148,12 @@ export default function RequestsPage() {
                   <th className="py-2.5 pr-4 text-xs font-medium uppercase tracking-wide text-zinc-500">Change</th>
                   <th className="py-2.5 pr-4 text-xs font-medium uppercase tracking-wide text-zinc-500">Status</th>
                   <th className="py-2.5 pr-4 text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Requested by
+                  </th>
+                  <th className="py-2.5 pr-4 text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Decided by
+                  </th>
+                  <th className="py-2.5 pr-4 text-xs font-medium uppercase tracking-wide text-zinc-500">
                     Submitted
                   </th>
                   <th className="py-2.5 pr-4 text-xs font-medium uppercase tracking-wide text-zinc-500">Actions</th>
@@ -158,9 +166,25 @@ export default function RequestsPage() {
                       <DomainBadge domain={r.domain} />
                     </td>
                     <td className="py-2.5 pr-4 text-zinc-700 dark:text-zinc-300">{TYPE_LABEL[r.request_type]}</td>
-                    <td className="py-2.5 pr-4 text-zinc-800 dark:text-zinc-200">{describeChange(r)}</td>
+                    <td className="py-2.5 pr-4 text-zinc-800 dark:text-zinc-200">
+                      {describeChange(r)}
+                      {r.target_record_id && (
+                        <button
+                          onClick={() => openRecord(r.target_record_id as number)}
+                          className="ml-2 rounded text-xs font-medium text-blue-600 underline transition-colors duration-150 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:text-blue-400 dark:hover:text-blue-300"
+                        >
+                          View record
+                        </button>
+                      )}
+                    </td>
                     <td className="py-2.5 pr-4">
                       <StatusBadge status={r.status} />
+                    </td>
+                    <td className="py-2.5 pr-4 text-zinc-600 dark:text-zinc-400">
+                      {r.submitted_by?.display_name ?? <span className="text-zinc-400 dark:text-zinc-600">—</span>}
+                    </td>
+                    <td className="py-2.5 pr-4 text-zinc-600 dark:text-zinc-400">
+                      {r.decided_by?.display_name ?? <span className="text-zinc-400 dark:text-zinc-600">—</span>}
                     </td>
                     <td className="py-2.5 pr-4 text-xs text-zinc-500 dark:text-zinc-500">
                       {new Date(r.submitted_at).toLocaleString()}
@@ -171,14 +195,14 @@ export default function RequestsPage() {
                           <button
                             onClick={() => handleDecision(r.id, "approve")}
                             disabled={actingOn === r.id}
-                            className="flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                            className="flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white transition-colors duration-150 hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <Check size={12} /> Approve
                           </button>
                           <button
                             onClick={() => handleDecision(r.id, "reject")}
                             disabled={actingOn === r.id}
-                            className="flex items-center gap-1 rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                            className="flex items-center gap-1 rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-medium text-zinc-600 transition-colors duration-150 hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
                           >
                             <X size={12} /> Reject
                           </button>

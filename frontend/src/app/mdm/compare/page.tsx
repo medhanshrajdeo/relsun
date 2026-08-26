@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { DomainBadge, fieldRowClass } from "@/components/mdm/Badges";
 import { Markdown } from "@/components/mdm/Markdown";
+import { Spinner } from "@/components/Spinner";
 
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "—";
@@ -103,7 +104,7 @@ function CompareContent() {
       <div className="flex items-center gap-3 border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
         <button
           onClick={() => router.back()}
-          className="flex items-center gap-1.5 rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+          className="flex items-center gap-1.5 rounded-md p-1.5 text-zinc-500 transition-colors duration-150 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
           aria-label="Back to search"
         >
           <ArrowLeft size={16} />
@@ -137,7 +138,7 @@ function CompareContent() {
               <div className="rounded-lg border border-zinc-200 bg-zinc-50/50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30">
                 {summaryLoading && (
                   <div className="flex items-center gap-2 text-sm text-zinc-400 dark:text-zinc-600">
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500 dark:border-zinc-700 dark:border-t-zinc-400" />
+                    <Spinner size={14} />
                     Drafting summary…
                   </div>
                 )}

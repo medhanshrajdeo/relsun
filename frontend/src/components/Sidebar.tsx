@@ -9,12 +9,15 @@ import {
   ChevronRight,
   CircleCheckBig,
   Database,
-  PanelLeftClose,
-  PanelLeftOpen,
+  LogOut,
+  Pin,
+  PinOff,
+  Settings,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 type NavLeaf = { label: string; href?: string };
 type NavSection = { label: string; href?: string; icon: React.ComponentType<{ size?: number; className?: string }>; children?: NavLeaf[] };
@@ -60,7 +63,9 @@ const NAV: NavSection[] = [
   },
 ];
 
-const COLLAPSE_STORAGE_KEY = "relsun:sidebar-collapsed";
+const PIN_STORAGE_KEY = "relsun:sidebar-pinned";
+const RAIL_WIDTH = "3.5rem";
+const EXPANDED_WIDTH = "16rem";
 
 function ComingSoonPill() {
   return (
@@ -114,25 +119,65 @@ function ConnectionStatus({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+function AccountRow({ collapsed }: { collapsed: boolean }) {
+  const { user, logout } = useAuth();
+  if (!user) return null;
+
+  if (collapsed) {
+    return (
+      <button
+        onClick={logout}
+        title={`Signed in as ${user.display_name} — Log out`}
+        className="flex w-full justify-center py-2.5 text-zinc-400 hover:text-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
+      >
+        <LogOut size={14} />
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between px-4 py-2.5 text-xs text-zinc-500 dark:text-zinc-500">
+      <span className="truncate">
+        Signed in as{" "}
+        <span className="font-medium text-zinc-700 dark:text-zinc-300">{user.display_name}</span>
+        {user.role && <span className="text-zinc-400 dark:text-zinc-600"> · {user.role}</span>}
+      </span>
+      <button
+        onClick={logout}
+        title="Log out"
+        className="ml-2 shrink-0 rounded-md p-1 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-300"
+      >
+        <LogOut size={13} />
+      </button>
+    </div>
+  );
+}
+
+// Auto-collapses to a narrow icon rail so the middle/right sections get
+// more room by default; hovering (or focusing into) the rail temporarily
+// expands it as an overlay on top of the main content rather than pushing
+// it, so there's no layout reflow while browsing. A pin keeps it expanded
+// permanently for anyone who'd rather have the labels always visible.
 export default function Sidebar() {
   const pathname = usePathname();
   const [openSections, setOpenSections] = useState<Set<string>>(
     () => new Set(["Master Data Management"])
   );
-  const [collapsed, setCollapsed] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [hovering, setHovering] = useState(false);
 
-  // Read persisted collapse state after mount only — localStorage isn't
+  // Read persisted pin state after mount only — localStorage isn't
   // available during SSR, and reading it in the initial useState would
   // desync from the server-rendered markup and trigger a hydration warning.
   useEffect(() => {
-    const stored = localStorage.getItem(COLLAPSE_STORAGE_KEY);
-    if (stored) setCollapsed(stored === "true");
+    const stored = localStorage.getItem(PIN_STORAGE_KEY);
+    if (stored) setPinned(stored === "true");
   }, []);
 
-  const toggleCollapsed = () => {
-    setCollapsed((prev) => {
+  const togglePinned = () => {
+    setPinned((prev) => {
       const next = !prev;
-      localStorage.setItem(COLLAPSE_STORAGE_KEY, String(next));
+      localStorage.setItem(PIN_STORAGE_KEY, String(next));
       return next;
     });
   };
@@ -146,27 +191,51 @@ export default function Sidebar() {
     });
   };
 
-  return (
-    <aside
-      className={`flex h-screen shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 transition-[width] duration-150 dark:border-zinc-800 dark:bg-zinc-950 ${
-        collapsed ? "w-14" : "w-64"
-      }`}
-    >
-      <div className={`flex items-center gap-2 px-4 py-4 ${collapsed ? "flex-col px-2" : ""}`}>
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-blue-600 text-xs font-bold text-white">
-          R
-        </div>
-        {!collapsed && <span className="flex-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">Relsun</span>}
-        <button
-          onClick={toggleCollapsed}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="rounded-md p-1 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-300"
-        >
-          {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-        </button>
-      </div>
+  const expanded = pinned || hovering;
+  const collapsed = !expanded;
 
-      <nav className={`scrollbar-hide flex-1 space-y-0.5 overflow-y-auto px-2 ${collapsed ? "px-1.5" : ""}`}>
+  // A focus leaving the sidebar entirely (not just moving between two of
+  // its own links) should collapse it back — checking relatedTarget is
+  // what tells those two cases apart for keyboard users tabbing through.
+  const handleBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHovering(false);
+  };
+
+  return (
+    <div
+      className="relative z-40 h-screen shrink-0"
+      style={{ width: pinned ? EXPANDED_WIDTH : RAIL_WIDTH }}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+      onFocus={() => setHovering(true)}
+      onBlur={handleBlur}
+    >
+      <aside
+        className={`absolute inset-y-0 left-0 flex flex-col border-r border-zinc-200 bg-zinc-50 transition-[width] duration-150 dark:border-zinc-800 dark:bg-zinc-950 ${
+          expanded ? "w-64" : "w-14"
+        } ${!pinned && hovering ? "shadow-xl" : ""}`}
+      >
+        <div className={`flex items-center gap-2 px-4 py-4 ${collapsed ? "flex-col px-2" : ""}`}>
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-blue-600 text-xs font-bold text-white">
+            R
+          </div>
+          {!collapsed && <span className="flex-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">Relsun</span>}
+          <button
+            onClick={togglePinned}
+            title={pinned ? "Unpin sidebar" : "Keep sidebar open"}
+            aria-label={pinned ? "Unpin sidebar" : "Keep sidebar open"}
+            aria-pressed={pinned}
+            className={`rounded-md p-1 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
+              pinned
+                ? "text-blue-600 dark:text-blue-400"
+                : "text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-300"
+            } ${collapsed ? "hidden" : ""}`}
+          >
+            {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+          </button>
+        </div>
+
+        <nav className={`scrollbar-hide flex-1 space-y-0.5 overflow-y-auto px-2 ${collapsed ? "px-1.5" : ""}`}>
         {NAV.map((section) => {
           const Icon = section.icon;
 
@@ -255,24 +324,25 @@ export default function Sidebar() {
             </div>
           );
         })}
-      </nav>
+        </nav>
 
-      <div className="border-t border-zinc-200 dark:border-zinc-800">
-        {collapsed ? (
-          <div className="flex justify-center py-3 text-zinc-400 dark:text-zinc-600" title="My Account — coming in a later phase">
-            <span className="text-xs">···</span>
-          </div>
-        ) : (
-          <span
-            title="Coming in a later phase"
-            className="flex cursor-not-allowed items-center px-4 py-3 text-sm text-zinc-400 dark:text-zinc-600"
+        <div className="border-t border-zinc-200 dark:border-zinc-800">
+          <AccountRow collapsed={collapsed} />
+          <Link
+            href="/settings"
+            title={collapsed ? "My Account" : undefined}
+            className={`flex items-center gap-2 px-4 py-3 text-sm transition-colors duration-150 ${collapsed ? "justify-center px-2" : ""} ${
+              pathname.startsWith("/settings")
+                ? "text-blue-700 dark:text-blue-400"
+                : "text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-300"
+            }`}
           >
-            My Account
-            <ComingSoonPill />
-          </span>
-        )}
-        <ConnectionStatus collapsed={collapsed} />
-      </div>
-    </aside>
+            <Settings size={15} className="shrink-0" />
+            {!collapsed && "My Account"}
+          </Link>
+          <ConnectionStatus collapsed={collapsed} />
+        </div>
+      </aside>
+    </div>
   );
 }

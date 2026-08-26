@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Repoints Tailwind's `dark:` variant from prefers-color-scheme-only to a
+   `.dark` class ancestor, toggled by lib/theme.tsx — every existing
+   `dark:` utility class across the app keeps working unchanged, only
+   what triggers it changes (manual override, falling back to system
+   preference when no override is set). */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,17 +19,20 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Keyed off the same `.dark` class as every other `dark:` utility now
+   (see @custom-variant above), not prefers-color-scheme directly — the
+   class already reflects the resolved theme, including the system-
+   preference fallback, so this is the one place that needs to agree
+   with it rather than deciding independently. */
+:root.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }
 
 /* Scrollable but no visible scrollbar track — used where a container may

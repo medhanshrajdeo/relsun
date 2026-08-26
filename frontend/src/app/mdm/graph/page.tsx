@@ -7,6 +7,7 @@ import { ArrowLeft, ArrowRight, Maximize2, Minimize2, Sparkles, ZoomIn } from "l
 import { fetchRelationshipGraph, type GraphResponse } from "@/lib/api";
 import { RelationshipGraph } from "@/components/mdm/RelationshipGraph";
 import { DomainBadge } from "@/components/mdm/Badges";
+import { useConciergeChat } from "@/lib/chat";
 
 const HOP_OPTIONS = [1, 2, 3] as const;
 
@@ -34,6 +35,17 @@ function GraphContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const { setGraphContext } = useConciergeChat();
+
+  // Publish the exact graph currently on screen for the Concierge to
+  // ground its answers in (see graph_context_agent.py) — and clear it on
+  // unmount so a question asked from a different page never gets answered
+  // against a graph the user has since left.
+  useEffect(() => {
+    setGraphContext(data);
+    return () => setGraphContext(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -85,7 +97,7 @@ function GraphContent() {
           {!expanded && (
             <button
               onClick={() => router.back()}
-              className="flex items-center gap-1.5 rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+              className="flex items-center gap-1.5 rounded-md p-1.5 text-zinc-500 transition-colors duration-150 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
               aria-label="Back to search"
             >
               <ArrowLeft size={16} />
@@ -109,7 +121,7 @@ function GraphContent() {
             <button
               key={h}
               onClick={() => setHops(h)}
-              className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+              className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
                 hops === h
                   ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                   : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
@@ -121,7 +133,8 @@ function GraphContent() {
           <button
             onClick={() => setExpanded((v) => !v)}
             title={expanded ? "Exit fullscreen (Esc)" : "Expand to fullscreen"}
-            className="ml-2 flex items-center gap-1.5 rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+            aria-label={expanded ? "Exit fullscreen" : "Expand to fullscreen"}
+            className="ml-2 flex items-center gap-1.5 rounded-md p-1.5 text-zinc-500 transition-colors duration-150 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
           >
             {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
           </button>
@@ -149,7 +162,7 @@ function GraphContent() {
 
         {!loading && !error && data && data.nodes.length > 1 && (
           <div className="h-full">
-            <RelationshipGraph key={`${data.center_id}-${hops}`} data={data} onNodeClick={recenter} />
+            <RelationshipGraph key={`${data.center_id}-${hops}`} data={data} onRecenter={recenter} />
           </div>
         )}
       </div>
@@ -176,7 +189,7 @@ function GraphContent() {
       {!loading && !error && data && data.nodes.length > 1 && (
         <div className="flex items-center gap-4 border-t border-zinc-200 px-6 py-2.5 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">
           <span>
-            Drag nodes to rearrange · scroll to zoom · click a node to recenter · arrows point owner{" "}
+            Drag nodes to rearrange · scroll to zoom · click a node to inspect it · arrows point owner{" "}
             <ArrowRight size={11} className="inline -translate-y-px" /> subsidiary
           </span>
           {anchor && (
