@@ -4,6 +4,16 @@ This document extends CLAUDE.md and CONFIGURABLE_WORKFLOWS_AGENTS.md. It
 covers what data Relsun's local build is seeded with, why, and how it's
 ingested. Read this before writing any data-loading code.
 
+> **Platform note (2026-08-24):** every "Neo4j" reference below is
+> superseded — see CLAUDE.md's "Platform pivot" section. The relationship
+> graph now lives as a `relationship_edges` table in the same Databricks
+> Lakebase (Postgres-wire-compatible) instance as `master_records`, not a
+> separate graph database. Left as-is here rather than rewritten, per this
+> repo's convention of preserving decision history inline (see the Agent
+> Architecture Pivot addendum in `CONFIGURABLE_WORKFLOWS_AGENTS.md` for the
+> precedent) — the ingestion *sequence* and *intent* described below are
+> still accurate, only the target database changed.
+
 ---
 
 ## 1. The governing principle
@@ -209,7 +219,13 @@ toward the full loop, not just the visually impressive part.
   reshaping the pipeline around a converted/alternate format.
 - Actual loaded scale: ~3.4M entities, ~169K active ownership edges
   (`IS_DIRECTLY_CONSOLIDATED_BY` / `IS_ULTIMATELY_CONSOLIDATED_BY`,
-  `RelationshipStatus == ACTIVE` only).
+  `RelationshipStatus == ACTIVE` only). **Updated 2026-08-25:** the
+  Databricks Lakebase migration (see the Platform note at the top of this
+  file) reloaded all data from the same source GLEIF ZIPs — no
+  re-download, same pipeline — and the edge count that came back was
+  ~257K, not ~169K. Left as a separate note rather than edited in place,
+  per this file's own convention above; not a new dataset or a changed
+  filter, just a different actual count on reload.
 - All bulk-loaded GLEIF entities were mapped to a single `domain =
   "Party"` rather than split across Party/Account/Supplier — GLEIF itself
   has no customer/supplier concept, and inventing one would conflict with

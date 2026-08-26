@@ -1,11 +1,14 @@
 # Relsun — Complete Product & Technical Handbook
 
 > **Snapshot document.** This captures Relsun exactly as it exists as of
-> **2026-08-13**. Unlike `CLAUDE.md` (the living day-to-day reference,
-> updated continuously as work happens), this file is **not**
-> auto-maintained — per direct instruction, it only changes when
-> explicitly asked to update it again. If you're reading this later and
-> something looks off, check `CLAUDE.md` and the actual code before
+> **2026-08-26** (refreshed from the prior 2026-08-13 snapshot — the
+> intervening two weeks moved a lot: real auth, a full platform migration
+> off Docker Postgres/Neo4j onto Databricks Lakebase, a Recommendation
+> Agent, and a Graph Context sub-agent). Unlike `CLAUDE.md` (the living
+> day-to-day reference, updated continuously as work happens), this file
+> is **not** auto-maintained — per direct instruction, it only changes
+> when explicitly asked to update it again. If you're reading this later
+> and something looks off, check `CLAUDE.md` and the actual code before
 > trusting this over them.
 >
 > Written for someone seeing Relsun for the first time. Every example
@@ -47,7 +50,7 @@ behind them at all.
 Two architectural decisions, made 2026-08-12, shape everything below:
 
 1. **No visual workflow builder.** An earlier plan called for a
-   drag-and-drop Trigger → Logic → Action → AI canvas (Attio-style) for
+   drag-and-drop Trigger → Logic → Action → AI canvas (Attio-style) forloo
    configuring automation. Rejected: agentic systems shouldn't be
    authored as a rigid step-1-then-step-2 sequence. Replaced with a
    **hierarchy of agents that call each other as tools** — each agent's
@@ -69,8 +72,18 @@ all four modules (most unbuilt): `AGENT_INVENTORY.md`.
 
 ## 3. Tech Stack
 
-- **Backend:** Python, FastAPI, SQLAlchemy 2.0, Postgres 16 + pgvector +
-  pg_trgm (Docker), Neo4j 5 Community (Docker), Alembic migrations
+- **Backend:** Python, FastAPI, SQLAlchemy 2.0, **Databricks Lakebase**
+  (managed Postgres-wire-compatible OLTP under Unity Catalog, `relsun-db`
+  project, Postgres 17, `us-east-1`) with pgvector + pg_trgm, Alembic
+  migrations. Replaces both the original Docker Postgres instance *and*
+  standalone Neo4j — see the Platform Pivot in §3a below. `docker-compose.yml`
+  and `db/init/` are gone; local dev connects straight to Lakebase.
+- **Auth:** real session-based login (`backend/app/auth.py`) — stdlib
+  PBKDF2-HMAC-SHA256 password hashing (no bcrypt/passlib dependency; this
+  is a handful of internal demo users, not a public signup surface),
+  opaque server-side session tokens in a `user_sessions` table (not a
+  JWT, so `POST /auth/logout` can actually revoke a session rather than
+  the client merely discarding a self-contained token). See §8a.
 - **Frontend:** Next.js (App Router), TypeScript, Tailwind CSS,
   lucide-react icons, d3-force (physics only — rendering is hand-written
   React SVG), react-markdown + remark-gfm (chat/summary rendering)
@@ -84,9 +97,60 @@ all four modules (most unbuilt): `AGENT_INVENTORY.md`.
   `claude-haiku-4-5-20251001` for cost-efficient verification;
   `config.py`'s fallback default is `claude-sonnet-5` — either is valid,
   it's a per-environment choice)
-- **Testing:** pytest, real Postgres wrapped in a rolled-back
+- **Testing:** pytest, real Postgres (Lakebase) wrapped in a rolled-back
   SAVEPOINT per test (`backend/tests/conftest.py`) — zero cost, nothing
-  persists, no mocking of the database layer
+  persists, no mocking of the database layer. 22 tests passing as of this
+  snapshot.
+
+### 3a. Platform Pivot (2026-08-24/25): Databricks Lakebase, not Docker Postgres + Neo4j
+
+Executed and fully verified end-to-end, not just planned. What moved: the
+data layer only — the agent architecture is untouched (Foundry was
+already "UX reference only, not a runtime dependency," see §2, and stays
+that way).
+
+- **Why Databricks:** the user signed up for a Databricks trial and chose
+  it as Relsun's target data platform, superseding an earlier
+  Microsoft-Fabric-leaning default that was never actually built against.
+- **Why AWS, not Azure:** an explicit cost/maturity comparison — Lakebase
+  itself is identical software regardless of cloud, and AWS won on cost
+  and on the original "move away from Microsoft" motivation. The
+  workspace uses Databricks-managed serverless storage (AWS Quickstart) —
+  no customer-owned S3/VPC/IAM stack to manage.
+- **Neo4j → `relationship_edges` table.** The relationship graph
+  (previously Neo4j Cypher, `-[*1..N]-` undirected multi-hop) is now a
+  plain Postgres table in the same Lakebase instance, walked via an
+  iterative BFS in `app/graph.py` (§7) instead of Cypher — chosen over a
+  single recursive CTE because it's simpler to bound safely: `limit` caps
+  the number of *nodes* admitted per hop, which is what actually protects
+  against a high-fan-out hub entity (a real company can have 50+ direct
+  subsidiaries).
+- **Data reload:** all ~3.4M GLEIF entities, the demo `existing_customer`
+  flags, and ~257K ownership edges were reloaded from the same source
+  ZIPs (no re-download needed) — a real number update from the original
+  ~169K edge count in §4/§7, not a typo.
+- **Auth to Lakebase itself:** a static Postgres password was the
+  original plan, but the moment the real instance was provisioned,
+  enabling native password auth threw a real Databricks warning ("exposes
+  it to the open internet... OAuth-based roles are recommended") and was
+  left disabled instead. What's actually running: a Databricks service
+  principal (`relsun-backend`) mints short-lived OAuth access tokens via
+  `client_credentials` grant against `{DATABRICKS_HOST}/oidc/v1/token`.
+  `app/lakebase_auth.py` caches the token in memory and refetches within 5
+  minutes of its ~1 hour expiry; `app/db.py`'s engine has a `do_connect`
+  hook that calls it on every new physical connection, plus
+  `pool_recycle=1800` so pooled connections don't sit on a dead token.
+  `DATABASE_URL` therefore carries no password at all — just the service
+  principal's Application ID as username; the real credential is minted
+  at connect time, never stored. Alembic's `env.py` was changed to reuse
+  `app.db.engine` rather than building a fresh one, since a separately
+  built engine has no `do_connect` hook and fails with "no password
+  supplied."
+- **Not done as part of this pivot** (flagged, not built): no Unity
+  Catalog Delta "bronze" landing of raw GLEIF XML, no Databricks Apps
+  hosting for FastAPI/Next.js at the time of the migration itself (that
+  followed separately — see the auth-header note in §8a; `backend/app.yaml`
+  and `deploy-combined/` are the in-progress hosting work).
 
 ---
 
@@ -95,7 +159,9 @@ all four modules (most unbuilt): `AGENT_INVENTORY.md`.
 Real data, not synthetic, bulk-loaded broadly with processing done lazily
 and narrowly:
 
-- **~3.4M real entities**, **~169K real ownership edges**, bulk-loaded
+- **~3.4M real entities**, **~257K real ownership edges** (originally
+  ~169K at first load; the count changed after the §3a Databricks reload
+  reprocessed the same source GLEIF ZIPs — not a new dataset), bulk-loaded
   from GLEIF's Level 1 (entities) + Level 2 (ownership) files — no
   hand-picked subset.
 - Every record's `domain` is currently `"Party"` — GLEIF gives no other
@@ -274,21 +340,34 @@ extracted.
 **Route:** `/mdm/graph?id={record_id}&hops={1|2|3}` · **Endpoint:** `GET
 /graph/{record_id}?hops={n}&limit={n}`
 
-Implementation: `backend/app/graph.py` (Cypher query into Neo4j) +
-`frontend/src/components/mdm/RelationshipGraph.tsx` (custom SVG,
-**d3-force used for physics only** — dragging/pan/zoom are plain React
-pointer events, not d3-drag/d3-zoom, to avoid the classic React/D3
-DOM-ownership conflict).
+Implementation: `backend/app/graph.py` (iterative BFS over a plain
+Postgres `relationship_edges` table, since the Platform Pivot in §3a
+replaced Neo4j — see below) + `frontend/src/components/mdm/RelationshipGraph.tsx`
+(custom SVG, **d3-force used for physics only** — dragging/pan/zoom are
+plain React pointer events, not d3-drag/d3-zoom, to avoid the classic
+React/D3 DOM-ownership conflict).
 
-**Why custom, not Neo4j Bloom:** Bloom needs a paid Enterprise/Aura tier,
-and — more importantly — is a closed third-party tool with no way to
-inject the "act on this relationship → create a Master Data Request"
-button the product's whole flagship narrative depends on.
+**Why custom, not Neo4j Bloom (still the right call post-pivot):** Bloom
+needed a paid Enterprise/Aura tier, and — more importantly — is a closed
+third-party tool with no way to inject the "act on this relationship →
+create a Master Data Request" button the product's whole flagship
+narrative depends on. Moving off Neo4j entirely didn't reopen this
+question — the rendering was always custom SVG regardless of what stored
+the graph underneath it.
 
-The Cypher query walks outward from an anchor entity up to N hops (1–3)
-in **any direction, over any relationship type** — not hardcoded to
-`:OWNS` — since a different tenant's data may use entirely different
-relationship types.
+**How the BFS works:** starting from the anchor id, each round trip pulls
+every `relationship_edges` row touching the current frontier (`parent_id
+= ANY(:frontier) OR child_id = ANY(:frontier)`), unions in the newly
+discovered ids, and repeats up to `hops` times (1–3, `DEFAULT_HOPS = 2`).
+Undirected on purpose, same as the Neo4j Cypher this replaced — a
+different tenant's data may care about ownership in either direction from
+a given anchor. `limit` (`DEFAULT_PATH_LIMIT = 80`) caps the total number
+of *nodes* admitted, not path count (unlike the old Cypher, which could
+bound paths directly) — that's what actually protects against a
+high-fan-out hub entity blowing up the response; `truncated: true` comes
+back on the `GraphResponse` when it kicks in. Every relationship type is
+supported (`type` is a free string on the edge, not hardcoded to `OWNS`)
+even though GLEIF-sourced data only ever produces `OWNS` today.
 
 **Real example** — centered on "Standard Bank Group Limited" (id
 1842436), 2 hops: **40 entities, 47 relationships**, all typed `OWNS`,
@@ -301,9 +380,44 @@ owner → subsidiary.
 **Known gap:** the flagship "Hanger → owned by Patient Square → Patient
 Square also owns Boeing (existing customer)" story from the wireframe is
 a **hypothetical illustrative narrative**, not real loaded data — the
-real Hanger, Inc. record has zero edges in the 169K-edge real ownership
-graph (ownership data is real but sparse). Don't demo that exact story as
-if it's live data.
+real Hanger, Inc. record has zero edges in the real ownership graph
+(ownership data is real but sparse; ~257K edges post-reload, see §3a).
+Don't demo that exact story as if it's live data.
+
+### 7a. Interaction polish (MarketGraph-parity pass, 2026-08-26)
+
+Three additions to the graph view, done in the same pass as the Graph
+Context sub-agent (§8.8) — the explicit goal was interaction parity with
+MarketGraph's click-to-inspect pattern **without** sidelining the Data
+Concierge, since the graph rendering isn't Relsun's differentiator, the
+agent layer is.
+
+- **Click-to-focus + side panel.** Clicking a non-anchor node no longer
+  immediately recenters the graph — it *selects* the node: every
+  node/edge outside its immediate neighborhood dims (`opacity`), and a
+  new side panel (`frontend/src/components/mdm/GraphNodeDetail.tsx`,
+  styled to match `RecordPanelTray.tsx`'s header/`dl`/footer conventions)
+  shows its name, domain, LEI, `existing_customer` flag, and connectivity
+  (below). Footer actions: **Recenter graph here** (the old click
+  behavior, now explicit and opt-in) and **Open record** (reuses
+  `useRecordModal()`, the same modal Search and Concierge record links
+  already open). Clicking empty canvas, or re-clicking the selected node,
+  clears the selection.
+- **Connectivity signal.** Purely client-side — node degree is a count of
+  `data.edges` touching that node's id, computed from the `GraphResponse`
+  the page already fetched. Shown in the side panel as "Connections in
+  this view." No backend change; not the record's true total connection
+  count, only what's visible at the current hop radius.
+- **Always-on legend.** Previously the top-left banner only appeared when
+  every edge in the graph happened to be the same type (`isUniform`) — a
+  first-time viewer got nothing to explain the styling otherwise. Now a
+  persistent legend always shows: the anchor ring style, the
+  existing-customer dashed amber ring, and a per-domain color key
+  (reusing `domainNodeFill` from `Badges.tsx`).
+
+Explicitly not built in this pass (flagged as a possible future one):
+"Expand" — merging a second node's full neighborhood into the current
+view without recentering.
 
 ---
 
@@ -362,15 +476,19 @@ turn-cap safety valve.
 ```
 Data Concierge Agent                        (top-level, entry point)
   └─ master_data  ─→  Master Data Handling Agent
-                         ├─ master_data_search   ─→ Master Data Search Agent
-                         ├─ master_data_compare  ─→ Master Data Compare Agent
-                         │                            └─ draft_compare_summary ─→ Compare Summary Agent (leaf)
-                         └─ master_data_request  ─→ Party Request Agent
+                         ├─ master_data_search         ─→ Master Data Search Agent
+                         ├─ master_data_compare        ─→ Master Data Compare Agent
+                         │                                  └─ draft_compare_summary ─→ Compare Summary Agent (leaf)
+                         ├─ master_data_request        ─→ Party Request Agent
+                         │                                  └─ get_recommendation ─→ Recommendation Agent (leaf, real web search)
+                         └─ master_data_graph_context  ─→ Graph Context Agent (leaf)
 ```
 
 Every arrow is `agent_as_tool()`. Nothing above is a fixed sequence —
 which arrow (if any) gets followed for a given prompt is decided by each
 agent's own instructions, at runtime, from what the prompt actually says.
+Added since the 2026-08-13 snapshot: `get_recommendation` (2026-08-20,
+§8.10) and `master_data_graph_context` (2026-08-26, §8.11).
 
 ### 8.3 Trigger — how any of this actually starts
 
@@ -450,14 +568,15 @@ a name, this agent calls Search first, then hands the resolved ID to
 whichever sub-agent actually needs it. Nothing hardcodes that two-step
 order.
 
-**Tools:** three — `master_data_search`, `master_data_compare`,
-`master_data_request`.
+**Tools:** four — `master_data_search`, `master_data_compare`,
+`master_data_request`, and (added 2026-08-26) `master_data_graph_context`
+(§8.11).
 
-**Full instructions (verbatim):**
+**Full instructions (verbatim, current):**
 
 > "You are the Master Data Handling Agent for an MDM (master data
 > management) platform, covering the Party, Item, and Location domains.
-> You have three sub-agents available:
+> You have four sub-agents available:
 >
 > master_data_search — looks up whether an entity already exists (search
 > by name, fuzzy/typo-tolerant, optionally filtered to a domain).
@@ -475,10 +594,32 @@ order.
 > master_data_search to resolve it first, the same way you do for
 > compare. A create needs no prior ID.
 >
+> master_data_graph_context — use this when the user is clearly asking
+> about relationships or entities in a relationship graph currently on
+> their screen (e.g. 'why is this connected to X', 'summarize this',
+> 'which of these is the parent') rather than asking you to look
+> something up fresh. It only knows the exact view the user currently has
+> open, not the full graph — if the user's question reaches beyond that,
+> prefer master_data_search or say plainly the answer isn't in the
+> current view.
+>
 > None of your sub-agents can approve or reject a pending request — that
 > only happens when a human reviews it in the Review Queue screen. If
 > asked to approve/reject/finalize something, say plainly that has to
-> happen there, not here."
+> happen there, not here.
+>
+> A sub-agent's reply may already contain markdown links in the form
+> [Name](record:ID) — that's how a specific record gets turned into
+> something clickable for the person you're relaying to. Preserve that
+> exact [Name](record:ID) formatting for any record you mention in your
+> own reply, whether you're passing a sub-agent's link through unchanged
+> or restating a record you know the id of yourself — never flatten it to
+> plain text like 'Name (ID: 123)'."
+
+(The last two paragraphs — graph context routing and link-preservation —
+were both added after the 2026-08-13 snapshot; the markdown-link
+convention exists because §8a's `PartyDetailModal` needs a stable scheme
+to intercept.)
 
 **Real example — resolving a name to an ID before comparing:** prompt
 "compare Hanger Inc and Hanger Solution - are they the same company?"
@@ -563,10 +704,11 @@ narrative is actually worth drafting.
 > entities are related through ownership, a parent company, or any other
 > relationship — you have no access to that data."
 
-That last sentence is load-bearing: **this agent has no Neo4j/graph
+That last sentence is load-bearing: **this agent has no relationship-graph
 access.** Relationship-based "these might be connected through an
-ownership chain" reasoning is explicitly the future Recommendation
-Agent's job (still unbuilt — see §12), not this one's.
+ownership chain" reasoning belongs to the Graph Context Agent (§8.11,
+grounded only in whatever's currently on screen) and the still-unbuilt
+full Recommendation Agent vision (§8.10/§12), not this one.
 
 ### 8.8 Compare Summary Agent (leaf)
 
@@ -597,15 +739,18 @@ indirectly as a tool the Compare Agent can call mid-conversation.
 **Cannot write to `master_records` under any circumstance** — the only
 thing it can do is call a tool that inserts a `pending`-status row.
 
-**Tools:** two —
+**Tools:** three —
 
 - `submit_party_request` (plain deterministic tool, wraps
   `requests.submit_request`)
 - `check_request_status` (plain deterministic tool, read-only, wraps
   `requests.get_request`/`list_requests`)
+- `get_recommendation` (added 2026-08-20 — `agent_as_tool` → Recommendation
+  Agent, §8.10; a real sub-agent hop, not a plain tool)
 
-Neither is another agent — there's no Recommendation Agent or
-Search/Compare access wired in here (see §12).
+No Search/Compare access is wired in here directly (this agent still
+can't resolve a bare name to an ID itself — that's the Master Data
+Handling Agent's job, §8.5).
 
 **Full instructions (verbatim):**
 
@@ -682,6 +827,213 @@ Prompt: _"delete the Quorvath Dynamics record"_
 Response: _"Done! I've submitted a delete request for the Quorvath
 Dynamics record (ID: 3399233). It's now request #29..."_
 
+### 8.10 Recommendation Agent (leaf, built 2026-08-20)
+
+**File:** `backend/app/agents/recommendation_agent.py`
+
+**Purpose:** Party's recommendation sub-agent from the original
+graph-aware, sales-acceleration vision — deliberately narrow first slice.
+Given a company name, it runs a **real live web search** (Anthropic's
+server-side `web_search_20260209` tool, not a client tool this repo
+implements) for firmographic facts — principally HQ address and
+legal/trading name — and returns them as an unverified suggestion for
+`party_request_agent` to relay, never something written to
+`master_records` directly.
+
+**Tools:** one — a raw server-side tool (`WEB_SEARCH_TOOL`, `max_uses: 5`),
+not a normal `Tool` with a Python handler. This required two additions to
+`agents/framework.py` that didn't exist at the 2026-08-13 snapshot:
+`Tool.raw_schema` (server tools use a `type` + params shape, not
+name/description/input_schema) and `pause_turn` handling in the run loop
+(a long server-tool turn can pause mid-search with no client tool
+awaiting a result — previously indistinguishable from a final answer,
+which would have raised on an empty text block).
+
+**Full instructions (verbatim):**
+
+> "You are the Recommendation Agent for an MDM (master data management)
+> platform's Party domain. Given a company name (and whatever other
+> details you're given), use web search to find real, current, verifiable
+> facts about it that would help someone filling in a Party record —
+> principally its headquarters address (street, city, state/region,
+> country) and legal/trading name, plus anything else clearly relevant
+> (industry, other office locations) if it comes up naturally in the
+> search results.
+>
+> You have web search only right now — no access to the internal master
+> data graph and no D&B lookup, so you cannot say whether an entity
+> already exists in Relsun or is connected to one that does; don't imply
+> otherwise.
+>
+> Always phrase findings as a suggestion sourced from a live web search,
+> not a stated fact — the calling agent still has to offer it to a human,
+> and nothing you find is written to master data by you or anyone
+> downstream without a human approving it. If search turns up nothing
+> solid or the results conflict, say that plainly rather than guessing an
+> address. Be concise — a short list of fields and values, not a research
+> report."
+
+**Real example — end to end, live-verified:** asked to create a Boeing
+party record with only the name known, `party_request_agent` called
+`get_recommendation`, which ran a real web search and returned Boeing's
+actual current HQ (**Arlington, VA** — correctly reflecting its real
+2022 relocation from Chicago) plus a real LEI, both explicitly flagged as
+unverified and offered for confirmation rather than submitted outright.
+
+**Not built** (deliberately deferred, not a gap in this slice): the
+internal-graph lookup ("memory before Google" — see §1's lookup design
+principle), D&B, and the full ownership-chain / parent-child-location
+recommendation flow (e.g. proposing a linked HQ + branch pair) from the
+original vision.
+
+### 8.11 Graph Context Agent (leaf, built 2026-08-26)
+
+**File:** `backend/app/agents/graph_context_agent.py`
+
+**Purpose:** lets the Data Concierge answer questions grounded in the
+*exact* relationship graph currently rendered on the user's screen — "why
+is this connected to Boeing," "summarize this cluster" — rather than
+falling back to a generic re-search or, worse, guessing from general
+knowledge. Modeled directly on the Search Agent's one-tool pattern
+(§8.6): always call the tool first, answer only from what it returns.
+
+The graph payload never comes from a fresh DB query inside this agent —
+the frontend already fetched it (`GraphResponse`, via `GET
+/graph/{id}`, §7) to render the page, and resends that exact object as
+`graph_context` on the chat request (`ConciergeChatRequest.graph_context`,
+`schemas.py`). This also means its answers are always about *this
+specific view* (the hop radius currently open), not the record's full
+graph — asked about something outside what's shown, it says so rather
+than guessing.
+
+**Tools:** one — `get_graph_context`, reading `graph_context` from the
+ambient `context` dict (the same `Tool.handler(**tool_input, **context)`
+mechanism `session` already uses, §8.1) and rendering it into text:
+anchor name/id, which visible entities are flagged `existing_customer`,
+and each relationship touching the anchor described the same
+direct-vs-ultimate-parent way `RelationshipGraph.tsx`'s `edgeLabel()`
+already phrases it on screen, so the Concierge's wording matches what the
+user is looking at.
+
+**Full instructions (verbatim):**
+
+> "You are the Master Data Graph Context Agent for an MDM (master data
+> management) platform. You have one tool, get_graph_context, which
+> describes the relationship graph currently displayed on the user's
+> screen — always call it first, before answering anything. Answer using
+> only what it returns: if a relationship, node, or entity isn't
+> mentioned in that description, say plainly that it isn't visible in the
+> current view (e.g. 'not shown at the current hop radius') rather than
+> guessing or falling back to general knowledge. If the tool reports no
+> graph is currently displayed, say so directly — don't attempt to
+> describe a graph from memory of the conversation. When you reference a
+> specific record, format it as a markdown link in the exact form
+> [Name](record:ID), matching how the other Master Data sub-agents
+> already do this."
+
+**The real bug this build hit, and the actual fix** (a prompting lesson,
+not a wiring bug — worth internalizing for any future routing
+instruction added to this hierarchy): after wiring everything above
+correctly (confirmed via temporary trace logging that the right
+`GraphResponse` reached the backend every time), the **Concierge Agent's
+own top-level call** (§8.4) still returned `stop_reason=end_turn` for
+graph questions — it never even attempted `tool_use` on `master_data`.
+Mentioning graph questions as one clause inside a longer descriptive
+sentence in `CONCIERGE_INSTRUCTIONS` did **not** fix it. What did:
+rewriting that guidance as a short, separate, imperative paragraph that
+(a) lists concrete trigger phrases ("this", "here", "on screen",
+"connected"), (b) says **ALWAYS hand off, even if you don't think you
+have a way to answer it**, and (c) explicitly forbids the top-level agent
+from concluding on its own that it lacks the capability — "that
+determination belongs to master_data." An LLM router will silently
+self-reject a hand-off it isn't confident about unless told point-blank
+not to make that judgment call itself.
+
+**Real example — live-verified, on `/mdm/graph` centered on The Boeing
+Company:** prompt _"what does the current graph show?"_ →
+_"The current graph is centered on THE BOEING COMPANY, the anchor, which
+is flagged as an existing customer. It's the only entity in the graph
+with that flag — none of the related entities carry it. The graph shows
+6 entities total, all connected to the anchor via direct..."_ — correctly
+grounded in the real on-screen data, not a generic answer. Also verified
+the negative case: navigating away from the graph page and asking a
+follow-up graph question gets "No graph is currently displayed" rather
+than stale context carried over from the page just left.
+
+**Frontend plumbing:** `frontend/src/lib/chat.tsx`'s `ChatProvider` holds
+`graphContext` state and a `setGraphContext` setter; `app/mdm/graph/page.tsx`
+pushes the current `GraphResponse` into it via `useEffect` on every fetch
+and clears it (`setGraphContext(null)`) on unmount, so the Concierge only
+"sees" a graph while one is actually on screen and always the current
+one. See §7a for the graph-interaction polish done in the same pass.
+
+---
+
+## 8a. Authentication & Users (built 2026-08-14, header-routing corrected since)
+
+There was **no auth system at all** in the 2026-08-13 snapshot — every
+request was anonymous and the Review Queue was a single unattributed
+list. Built per direct instruction, specifically to support a real
+multi-user request/approval loop (submit as one person, log out, log in
+as someone else, approve from the Review Queue).
+
+- **`backend/app/auth.py`:** stdlib PBKDF2-HMAC-SHA256 password hashing
+  (`hashlib`, constant-time compare via `hmac.compare_digest` — no
+  bcrypt/passlib dependency added, since this is a handful of internal
+  demo users, not a public signup surface) and opaque, server-side
+  session tokens (`user_sessions` table, 12-hour TTL) rather than a JWT —
+  the entire point being that `POST /auth/logout` can actually revoke a
+  session, not just have the client discard a self-contained token that
+  stays valid regardless.
+- **Every API route requires a valid session token** except `/health` and
+  `/auth/login`, enforced via `get_current_user` (`backend/app/deps.py`).
+- **Header correction (found while prepping the Databricks Apps hosting,
+  after the 2026-08-14 build):** the token does **not** travel as the
+  standard `Authorization` header — it travels as a custom
+  `X-Relsun-Token` header. Databricks Apps' own gateway reserves
+  `Authorization` for its own OAuth session validation and silently
+  strips/rejects anything it can't validate as a Databricks token before
+  the request ever reaches this app. This was discovered live: every
+  authenticated call 401'd with no `Authorization` header visible
+  server-side at all, even immediately after a successful same-origin
+  login. `frontend/src/lib/api.ts` sends `X-Relsun-Token`; any
+  curl/script-based testing against this API must do the same.
+- **Actor identity on requests:** `MasterDataRequest` gained
+  `submitted_by`/`decided_by` FKs to a new `users` table — two separate
+  columns, not one shared "actor," since the submitter and decider are
+  commonly (by design) different people. The logged-in user chatting with
+  the Concierge threads into `party_request_agent`'s submit tool via
+  `context["current_user_id"]`; the logged-in user calling `POST
+  /requests/{id}/approve`\|`reject` is recorded as decider.
+- **Frontend:** `/login` page + `lib/auth.tsx`'s `AuthProvider`
+  (localStorage-persisted token) + `AppShell` gating every other route
+  client-side (this whole app is a client-rendered SPA-style Next.js
+  frontend, no server auth/middleware). Sidebar shows "Signed in as X ·
+  role" with a logout control.
+- **Two demo users only** (no self-service signup), seeded via
+  `backend/scripts/seed_users.py`:
+
+  | Username | Password  | Display Name | Role         |
+  | -------- | --------- | ------------ | ------------ |
+  | `alice`  | `alice123`| Alice        | Sales Rep    |
+  | `bob`    | `bob123`  | Bob          | Data Steward |
+
+  `role` is a **display label only** — not an enforcement mechanism.
+  RBAC (per-role permissions on who can approve what) is still explicitly
+  not built (§12).
+- **Live-verified end to end:** Alice submits a request via chat → logs
+  out → Bob logs in → sees it in the Review Queue with "Requested by:
+  Alice" → approves → the request shows "Decided by: Bob."
+- **Record markdown links:** as part of the same build, Search/Compare/
+  Party Request agent instructions started formatting any record they
+  reference as `[Name](record:ID)`. `frontend/src/components/mdm/Markdown.tsx`
+  intercepts that scheme via a custom `urlTransform` (react-markdown's
+  default one silently blanks non-standard URI schemes) and opens a
+  record detail panel in place via a shared `RecordModalProvider` context
+  — no page navigation. The same mechanism backs Search's "open record"
+  button, a "View record" link on Requests rows, and (§7a) the graph
+  side panel's "Open record" button.
+
 ---
 
 ## 9. Master Data Requests (the approval workflow)
@@ -736,8 +1088,9 @@ screen.
 ### 9.4 Soft delete
 
 A 'delete' request, on approval, sets `master_records.deleted_at` — the
-row is **never hard-deleted**. A real `DELETE` would orphan Neo4j graph
-edges, any generated embeddings, and anything else referencing that id;
+row is **never hard-deleted**. A real `DELETE` would orphan
+`relationship_edges` rows, any generated embeddings, and anything else
+referencing that id;
 soft-delete is also the correct default for data someone might need to
 audit later. `search.py` and `compare.py` both filter out
 `deleted_at IS NOT NULL` records.
@@ -826,40 +1179,67 @@ phrasings. **Current decision: leave it as-is.**
 | `decision_note` | text, nullable | |
 | `submitted_at` | timestamptz | |
 | `decided_at` | timestamptz, nullable | |
+| `submitted_by_id` | int, FK → `users.id`, nullable | Added with auth, §8a — nullable so a future non-chat submission path isn't precluded |
+| `decided_by_id` | int, FK → `users.id`, nullable | Separate FK from `submitted_by_id` — submitter and decider are commonly different people, that's the point of the Review Queue |
 
 **`audit_log`** — append-only trail, separate from `MasterDataRequest.status`
 (`id` int, PK, `entity_type` varchar(50), `entity_id` int, `action`
 varchar(50) — `submitted`/`approved`/`rejected`/`published`, `detail`
 text nullable, `created_at` timestamptz)
 
-**Neo4j** (separate database, relationship graph) — `:Entity` nodes with
-`domain`, `name`, `lei`, `master_record_id`; relationships (typically
-`:OWNS`) carry `is_direct_parent`/`is_ultimate_parent` properties from
-GLEIF's ownership hierarchy data.
+**`users`** (added with auth, §8a) — `id` int PK, `username` varchar(50)
+unique/indexed, `display_name` varchar(100), `role` varchar(50) nullable
+(display label only, not RBAC), `password_hash` varchar(200) (PBKDF2, see
+§8a), `created_at` timestamptz.
+
+**`user_sessions`** (added with auth, §8a) — `token` varchar(64) PK
+(opaque bearer token, not a JWT), `user_id` int FK → `users.id`,
+`created_at` / `expires_at` timestamptz (12-hour TTL).
+
+**`relationship_edges`** (replaces Neo4j, §3a/§7) — a directed ownership
+edge between two `master_records` rows (parent owns child). `id` int PK,
+`parent_id`/`child_id` int FK → `master_records.id` (both indexed, unique
+together), `is_direct_parent`/`is_ultimate_parent` boolean,
+`created_at` timestamptz. A parent/child pair can be both the direct
+*and* ultimate parent at once (common with only one ownership level), so
+both are flags on the same edge rather than separate rows. Walked via the
+BFS in `app/graph.py` (§7), not Cypher — Neo4j is no longer part of this
+stack at all.
 
 ---
 
 ## 11. Full API Reference
 
-| Method | Path                              | Purpose                                                    |
-| ------ | --------------------------------- | ---------------------------------------------------------- |
-| GET    | `/health`                         | DB connectivity check                                      |
-| GET    | `/domains`                        | Distinct domain values actually present (not a fixed enum) |
-| GET    | `/search?q=&domain=`              | Fuzzy search, §5                                           |
-| GET    | `/compare?ids=&ids=`              | Deterministic compare, §6a                                 |
-| GET    | `/compare/summary?ids=&ids=`      | AI narrative over compare, §6b                             |
-| POST   | `/concierge/chat`                 | `{prompt, history}` → the entire agent hierarchy, §8       |
-| GET    | `/requests?status=`               | List requests (Review Queue), §9                           |
-| GET    | `/requests/{id}`                  | Single request detail                                      |
-| POST   | `/requests/{id}/approve`          | `{decision_note}` → applies to `master_records`, §9.1      |
-| POST   | `/requests/{id}/reject`           | `{decision_note}` → no data change                         |
-| GET    | `/graph/{record_id}?hops=&limit=` | Relationship graph, §7                                     |
+| Method | Path                              | Purpose                                                    | Auth |
+| ------ | --------------------------------- | ---------------------------------------------------------- | ---- |
+| GET    | `/health`                         | DB connectivity check                                      | No |
+| POST   | `/auth/login`                     | `{username, password}` → `{token, user}`, §8a              | No |
+| POST   | `/auth/logout`                    | Revokes the current session server-side, §8a               | Yes |
+| GET    | `/auth/me`                        | Current logged-in user, for session restore on page load   | Yes |
+| GET    | `/domains`                        | Distinct domain values actually present (not a fixed enum) | Yes |
+| GET    | `/search?q=&domain=`              | Fuzzy search, §5                                           | Yes |
+| GET    | `/master-records/{id}`            | Single record's full detail (backs the record modal, §8a)  | Yes |
+| GET    | `/compare?ids=&ids=`              | Deterministic compare, §6a                                 | Yes |
+| GET    | `/compare/summary?ids=&ids=`      | AI narrative over compare, §6b                             | Yes |
+| POST   | `/concierge/chat`                 | `{prompt, history, graph_context?}` → the agent hierarchy, §8/§8.11 | Yes |
+| GET    | `/requests?status=`               | List requests (Review Queue), §9                           | Yes |
+| GET    | `/requests/{id}`                  | Single request detail                                      | Yes |
+| POST   | `/requests/{id}/approve`          | `{decision_note}` → applies to `master_records`, §9.1      | Yes |
+| POST   | `/requests/{id}/reject`           | `{decision_note}` → no data change                         | Yes |
+| GET    | `/graph/{record_id}?hops=&limit=` | Relationship graph, §7                                     | Yes |
+
+**Auth header — not `Authorization`.** Every "Yes" row above reads a
+custom **`X-Relsun-Token`** header, not the standard `Authorization`
+header — see §8a for why (Databricks Apps' gateway reserves
+`Authorization` for its own OAuth validation and strips it before this
+app ever sees the request). Any curl/script call must set
+`X-Relsun-Token: <token from /auth/login>`.
 
 All error responses use FastAPI's standard `{"detail": "..."}` shape.
-Notable status codes: `503` = agent not configured (no
-`ANTHROPIC_API_KEY`), `502` = agent call failed, `409` = request
-already decided / not found (state conflict), `400` = validation error
-(missing required field, duplicate LEI).
+Notable status codes: `401` = missing/invalid/expired session token,
+`503` = agent not configured (no `ANTHROPIC_API_KEY`), `502` = agent call
+failed, `409` = request already decided / not found (state conflict),
+`400` = validation error (missing required field, duplicate LEI).
 
 ---
 
@@ -872,16 +1252,23 @@ already decided / not found (state conflict), `400` = validation error
 - **Item and Location domains** — no schema, no data, no agents. Only
   Party is real. (Explicit decision: design later, don't fabricate data
   now.)
-- **The Recommendation Agent** — the graph-aware, sales-acceleration
-  feature ("this prospect connects to an existing customer via an
-  ownership chain") described in the founders' original vision. Not
-  built. Explicitly **not** the same thing as Compare Agent's
-  name-similarity verdict — conflating the two was a real mistake caught
-  mid-build (see the pivot addendum).
-- **RBAC / real user identity** — no auth system exists anywhere in
-  Relsun. The Review Queue is a single shared list anyone using the
-  product can act on; there's no concept of "assigned approver" yet, by
-  explicit decision (RBAC is future work, not designed).
+- **The Recommendation Agent, full vision** — §8.10's first slice (built
+  2026-08-20) covers real web search only for firmographic facts (HQ
+  address, legal name), always as an unverified suggestion. Still **not**
+  built: the internal-graph lookup ("memory before Google," §1), D&B, and
+  the graph-aware, sales-acceleration flow itself ("this prospect
+  connects to an existing customer via an ownership chain") described in
+  the founders' original vision. Explicitly **not** the same thing as
+  Compare Agent's name-similarity verdict — conflating the two was a real
+  mistake caught mid-build (see the pivot addendum).
+- **RBAC** — real login exists now (§8a, built 2026-08-14), but `role` is
+  a display label only. Every logged-in user can approve/reject any
+  request; there's no concept of "assigned approver" yet, by explicit
+  decision (RBAC enforcement is future work, not designed).
+- **The graph → action loop** ("act on this relationship" from a graph
+  node) — explicitly deferred per direct instruction in favor of the
+  graph interaction polish + Graph Context sub-agent pass (§7a/§8.11),
+  pending a realistically-sized `existing_customer` flag set.
 - **Real email notifications** — a pending request showing up in the
   Review Queue _is_ the notification. No email provider configured, no
   `notification_task` table.
@@ -914,10 +1301,23 @@ already decided / not found (state conflict), `400` = validation error
    didn't explicitly say to check conversation history before asking for
    clarification, so "compare it with X" as a follow-up failed until that
    was added explicitly (§8.4).
+4. **LLM router self-rejection (2026-08-26, §8.11).** The Concierge's
+   top-level call silently refused to hand off graph questions to
+   `master_data` even after every piece of graph-context plumbing was
+   wired and verified correct — a capability mentioned as one clause
+   inside a longer instruction sentence isn't enough for a router to
+   actually act on it with confidence. Fixed with a separate, imperative,
+   "always hand off, that determination isn't yours to make" paragraph.
+   Also worth remembering: the first attempt to verify this fix live
+   looked like a regression because the browser's chat drawer was showing
+   a stale, pre-fix answer from `sessionStorage` — a backend logic fix
+   doesn't invalidate already-cached client-side chat history, so
+   verifying in the UI means sending a genuinely new message, not reading
+   an old one.
 
-Both 1 and 2 were caught by actually running the system (tests / clicking
-through the UI), not by reading the code — worth remembering as a pattern
-for whatever gets built next.
+1, 2, and 4 were all caught only by actually running the system (tests /
+clicking through the UI / a live chat message), not by reading the code —
+worth remembering as a pattern for whatever gets built next.
 
 ---
 

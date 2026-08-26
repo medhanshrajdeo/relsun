@@ -187,7 +187,9 @@ config-layer build-out layered on top of it.
 | 2 | Master Data Search | ✅ Done — fuzzy matching, deterministic, fast, relevance-ranked (see fixes above) |
 | 3 | Master Data Compare | ✅ Deterministic comparison (field diffs, pairwise duplicate verdicts) working and reachable from Search. ✅ AI summary agent (`compare_summary.py`) **verified working** as of the Compare Agent build below — first live caller confirmed it drafts correctly. |
 | 4 | View Graph (Relationship Intelligence) | ✅ Done — custom SVG + d3-force visualization, verified end-to-end against real ownership data including the flagship "existing customer discovered in chain" narrative |
-| — | Master Data Requests (approval workflow) | ✅ **Party domain done, built and live-verified 2026-08-13.** Full hierarchy: `POST /concierge/chat` → Concierge → Master Data → {Search, Compare, Request}, all on the live Anthropic API. Request flow: `party_request_agent.py` gathers create/update/delete details conversationally (resolving names to IDs via Search first when needed) and saves a pending proposal — it never applies anything itself. `app/requests.py` holds the only code in the repo allowed to write to `master_records` (`approve_request`/`reject_request`), called exclusively from `POST /requests/{id}/approve`\|`reject` when a human acts in the new Review Queue screen (`frontend/src/app/mdm/requests/page.tsx`, sidebar link now live). Live-verified end to end: create→approve produces a real, searchable record; create→reject never touches `master_records`; update/delete by name resolve correctly and apply/soft-delete correctly (soft-delete via `master_records.deleted_at`, excluded from search). **Required-fields policy** (added 2026-08-13, direct instruction): create requests must have `name` + `country` — `submit_request` rejects otherwise; `lei` is optional but, when given, is checked for an existing active record with the same value (an exact LEI match is decisive, unlike name similarity — rejected outright, not just flagged) and maps to `master_records.external_id` on approval, not left in the JSON `attributes` blob. Same LEI check applies to update. Checked at both submit time and again at approve time (the actual write), since two pending requests can both still be pending when one gets approved first — approve-time is the one that has to be airtight; a stray `IntegrityError` is the final backstop. **No Recommendation Agent** — deliberately deferred as its own graph-aware, sales-acceleration feature (see the pivot addendum), not folded into this pass as a name-similarity wrapper. Not done: Item/Location Request Agents (data-deferred), RBAC, real email, real downstream MCP propagation, scheduling. See `AGENT_INVENTORY.md` and the pivot addendum in `CONFIGURABLE_WORKFLOWS_AGENTS.md`. |
+| — | Master Data Requests (approval workflow) | ✅ **Party domain done, built and live-verified 2026-08-13.** Full hierarchy: `POST /concierge/chat` → Concierge → Master Data → {Search, Compare, Request}, all on the live Anthropic API. Request flow: `party_request_agent.py` gathers create/update/delete details conversationally (resolving names to IDs via Search first when needed) and saves a pending proposal — it never applies anything itself. `app/requests.py` holds the only code in the repo allowed to write to `master_records` (`approve_request`/`reject_request`), called exclusively from `POST /requests/{id}/approve`\|`reject` when a human acts in the new Review Queue screen (`frontend/src/app/mdm/requests/page.tsx`, sidebar link now live). Live-verified end to end: create→approve produces a real, searchable record; create→reject never touches `master_records`; update/delete by name resolve correctly and apply/soft-delete correctly (soft-delete via `master_records.deleted_at`, excluded from search). **Required-fields policy** (added 2026-08-13, direct instruction): create requests must have `name` + `country` — `submit_request` rejects otherwise; `lei` is optional but, when given, is checked for an existing active record with the same value (an exact LEI match is decisive, unlike name similarity — rejected outright, not just flagged) and maps to `master_records.external_id` on approval, not left in the JSON `attributes` blob. Same LEI check applies to update. Checked at both submit time and again at approve time (the actual write), since two pending requests can both still be pending when one gets approved first — approve-time is the one that has to be airtight; a stray `IntegrityError` is the final backstop. **Recommendation Agent, first slice: built and live-verified 2026-08-20.** `app/agents/recommendation_agent.py` is Party's recommendation sub-agent, wired as a tool on `party_request_agent`. Scope of this slice, deliberately narrow: Anthropic's server-side `web_search_20260209` tool only — real live web search for firmographic facts (HQ address, legal name), always framed as an unverified suggestion for the human to confirm, never written to `master_records` directly. Still NOT built: internal-graph lookup (the "memory before Google" principle), D&B, and the full ownership-chain / parent-child-location recommendation flow (e.g. proposing a linked HQ + branch pair) from the original graph-aware, sales-acceleration vision — see `design_recommendation_agent_party.md` in auto-memory for the fuller design conversation this slice starts from. Required two small framework additions in `agents/framework.py` to support server tools at all: `Tool.raw_schema` (server tools use a `type`+params shape, not name/description/input_schema) and `pause_turn` handling in the run loop (a long server-tool turn can pause mid-search with no client tool awaiting a result — previously indistinguishable from a final answer, which would have raised on an empty text block). Live-verified end to end: asked to create a Boeing party record with only the name known, `party_request_agent` called `get_recommendation`, which ran a real web search and returned Boeing's actual current HQ (Arlington, VA — correctly reflecting its real-world 2022 relocation from Chicago) plus a real LEI, both explicitly flagged as unverified and offered for confirmation rather than submitted outright. Not done: Item/Location Request Agents (data-deferred), RBAC, real email, real downstream MCP propagation, scheduling. See `AGENT_INVENTORY.md` and the pivot addendum in `CONFIGURABLE_WORKFLOWS_AGENTS.md`. |
+| — | Real login + multi-user request/approval + party detail modal | ✅ **Built and live-verified 2026-08-14** (direct instruction, replacing the prior no-auth state). `app/auth.py`: stdlib PBKDF2 password hashing, opaque server-side session tokens (`user_sessions` table, not JWT — `POST /auth/logout` actually revokes, doesn't just discard client-side). Every API route requires a bearer token except `/health` and `/auth/login`, enforced via `get_current_user` (`app/deps.py`). **Header correction (uncommitted, discovered while prepping the Databricks Apps deployment):** that token travels as a custom `X-Relsun-Token` header, not the standard `Authorization` header — Databricks Apps' own gateway reserves `Authorization` for its own OAuth session validation and silently strips/rejects anything it can't validate as a Databricks token before the request ever reaches this app (found live: every authenticated call 401'd with no `Authorization` header visible server-side at all, even right after a successful same-origin login). `frontend/src/lib/api.ts` sends `X-Relsun-Token`; any curl/script-based testing against this API must do the same, not `Authorization: Bearer`. `MasterDataRequest` gained `submitted_by`/`decided_by` FKs to a new `users` table — the logged-in user chatting with the Concierge is threaded into `party_request_agent`'s submit tool via `context["current_user_id"]`, and the logged-in user calling `POST /requests/{id}/approve`\|`reject` is recorded as decider. Frontend: `/login` page + `lib/auth.tsx` `AuthProvider` (localStorage-persisted token) + `AppShell` gating every route; Sidebar shows "Signed in as X · role" with a logout control. Two demo users only (`alice`/Sales Rep, `bob`/Data Steward, seeded via `scripts/seed_users.py`) — no self-service signup, `role` is a display label only, not RBAC enforcement (still not done). Live-verified: Alice submits via chat → logs out → Bob logs in → sees it in the Review Queue with "Requested by: Alice" → approves → "Decided by: Bob". Separately, search/compare/party-request agent instructions now format any record they reference as a markdown link `[Name](record:ID)`; `frontend/src/components/mdm/Markdown.tsx` intercepts that scheme (via a custom `urlTransform`, since react-markdown's default one silently blanks non-standard URI schemes) and opens `PartyDetailModal` in-place via a shared `RecordModalProvider` context — no page navigation. Same modal now backs Search's previously-disabled "open record" button and a new "View record" link on Requests rows with a `target_record_id`. |
+| — | Graph interaction polish + Graph Context sub-agent (MarketGraph-parity pass) | ✅ **Built and live-verified 2026-08-26**, per direct instruction: prioritize graph-interaction polish and a Concierge upgrade over the graph→action loop (deferred) and the 13F dataset question (declined). **Phase A — `frontend/src/components/mdm/RelationshipGraph.tsx` + new `GraphNodeDetail.tsx`:** clicking a non-anchor node now selects it in place (dims every node/edge outside its immediate neighborhood) instead of immediately recentering; a new side panel (`GraphNodeDetail.tsx`, styled to match `RecordPanelTray.tsx`'s header/dl/footer conventions) shows the selected node's domain, LEI, `existing_customer` flag, and its connectivity count *within the current view* (client-side degree count over the already-fetched edge list, no extra request), with footer actions "Recenter graph here" (the old click behavior, now explicit) and "Open record" (`useRecordModal()`). The legend in the top-left is now always shown (anchor ring, existing-customer dashed amber ring, per-domain color key) rather than only appearing in the degenerate all-edges-one-type case. Clicking empty canvas or re-clicking the selected node clears the selection. **Phase B — new leaf agent `backend/app/agents/graph_context_agent.py`:** one tool, `get_graph_context`, that renders whatever `GraphResponse` the frontend's graph page currently has on screen (anchor name, existing_customer flags, direct/ultimate-parent relationships, total entity count) into text an LLM can answer from — returns "No graph is currently displayed." when there isn't one, so the agent has a clean way to say it has nothing to work from. Wired as a 4th tool (`master_data_graph_context`) on `master_data_agent.py`. Plumbing: `ConciergeChatRequest` gained an optional `graph_context: GraphResponse \| None` field (`schemas.py`), threaded through `POST /concierge/chat` into `concierge_agent.run(..., context={...})` the same way `session` already is; `frontend/src/lib/chat.tsx`'s `ChatProvider` holds `graphContext` state, `app/mdm/graph/page.tsx` pushes the current `GraphResponse` into it on every fetch and clears it on unmount, so the Concierge only "sees" a graph while one is actually open and never a stale one from a page since left. **The real bug, and the actual lesson:** after all of the above was wired correctly (confirmed via temporary trace logging — since removed), the Concierge's own top-level LLM call still returned `stop_reason=end_turn` for graph questions, never even attempting `tool_use` on `master_data` — a pure prompting problem, not a wiring one. Mentioning graph questions as one clause inside a longer descriptive sentence in `CONCIERGE_INSTRUCTIONS` did **not** fix it. What did: rewriting that guidance as a short, separate, imperative paragraph that (a) lists concrete trigger phrases ("this", "here", "on screen", "connected"), (b) says **ALWAYS hand off, even if you don't think you have a way to answer it**, and (c) explicitly forbids the top-level agent from concluding on its own that it lacks the capability ("that determination belongs to master_data"). Root cause: an LLM router will silently self-reject a hand-off it isn't confident about unless told point-blank not to make that judgment call itself — worth remembering for any future routing instruction added to this hierarchy. Live-verified three ways after an initial false-positive: curl against `/concierge/chat` with a real `graph_context` payload, `pytest`, and — after the user correctly flagged that the product UI still looked broken — a genuinely fresh message sent live in the browser on `/mdm/graph`, which confirmed the fix (the earlier "it's still broken" report turned out to be a stale, pre-fix answer sitting in the chat drawer's `sessionStorage`-persisted history, which a backend logic change doesn't invalidate — not a regression). Unrelated environment note hit while restarting the backend for this: `USE_TF=0` is required before `uvicorn` starts locally, or `sentence_transformers`' import of `transformers` tries to load a TensorFlow/Keras backend and crashes the app at import time with no visible error (`ValueError: ... Keras 3 ... not yet supported`) — this repo has no TensorFlow usage anywhere, it's purely `transformers` probing for a backend that happens to be broken in this environment. Not yet added, offered but not requested: a "clear conversation" affordance in the chat drawer so old test messages don't linger. |
 | — | Merge & survivorship | ⬜ Not started |
 | — | Data Catalog / Governance / Quality agent hierarchies | ⬜ Fully designed in `AGENT_INVENTORY.md` (2026-08-12), not built — matches their current "Soon" sidebar placeholders. Do not start building these until the Master Data agent hierarchy is solid. |
 | Stage 3 | Customer-facing config layer (now: editable agent instructions, not a visual workflow builder — see pivot addendum) | ⬜ Not started — explicitly out of scope until the Master Data agent hierarchy is solid |
@@ -197,10 +199,99 @@ live state. Verify against actual code/git log before assuming something
 listed as ✅ is still true, especially for anything touching external
 services (Foundry, GLEIF's live API) that this repo doesn't control.
 
+## Platform pivot (2026-08-24): Databricks over Microsoft Fabric/Azure-default
+
+The plan implicit in this dev environment's tooling (heavy Microsoft
+Fabric/Power BI skill set) was superseded before it was ever built against:
+the user signed up for a Databricks trial and chose Databricks as Relsun's
+target data platform instead. This does **not** touch the agent
+architecture — Foundry was already "UX reference only, not a runtime
+dependency" (see the Agent Architecture Pivot above) and stays that way;
+agents still call the Anthropic API directly, no change.
+
+**Cloud provider correction (2026-08-25):** despite the section title,
+the actual trial workspace is **AWS**-hosted, not Azure — decided via an
+explicit cost/maturity comparison (Lakebase itself is identical software
+regardless of cloud; AWS won on cost and on the user's original
+"move away from Microsoft" motivation for this whole pivot). The
+workspace (`relsun`, region `us-east-1`) was provisioned through
+Databricks' AWS Quickstart, which uses Databricks-managed serverless
+storage — there's no customer-owned S3/VPC/IAM CloudFormation stack to
+know about, unlike the older bring-your-own-cloud-account Databricks
+setup flow.
+
+**Migration executed and fully verified end-to-end, 2026-08-25.** The
+Lakebase project is `relsun-db` (Postgres 17, `us-east-1`), database
+`databricks_postgres` — not a database literally named `relsun`, which
+is a purely cosmetic difference from `SETUP.md`'s original wording, not a
+functional one. All ~3.4M GLEIF entities, the 3 demo `existing_customer`
+flags, and ~257K ownership edges were reloaded from the same source ZIPs
+as the original build (no re-download needed) — see the auth correction
+below for why the ingestion scripts needed changes beyond a connection
+string swap. Verified live against the running API: `/health`, Search
+("Hanger" → real Exact matches), Compare (field diffs + pairwise verdict
++ vector similarity, confirming pgvector), View Graph (Boeing's real
+subsidiaries via the new `relationship_edges` BFS, `existing_customer`
+correctly `true`), Concierge chat (full agent hierarchy submitted a real
+request), and the multi-user create→approve loop (Alice submits, Bob
+approves, record goes live and becomes searchable). `pytest` (22 tests)
+passes against the live Lakebase instance.
+
+What actually moved: the data layer. **Databricks Lakebase** (a managed,
+Postgres-wire-compatible OLTP database under Unity Catalog) replaces both
+the standalone Docker Postgres instance *and* standalone Neo4j — it's real
+Postgres, so `search.py`'s pg_trgm/pgvector-dependent fuzzy matching and
+`requests.py`'s transactional approve/reject logic needed zero changes,
+only the connection string did. The relationship graph (previously Neo4j
+Cypher, `-[*1..N]-` undirected multi-hop) is now a `relationship_edges`
+table in the same Lakebase instance, walked via an iterative BFS in
+`app/graph.py` instead of Cypher — see that file's docstring for why BFS
+over a literal recursive CTE (simpler bounding against a high-fan-out hub
+node). `docker-compose.yml` and `db/init/` are gone; local dev connects
+straight to Lakebase, same as any other environment — see `SETUP.md`,
+which now documents Lakebase provisioning as its own step.
+
+Explicitly **not** done as part of this pivot (flagged, not built): no
+Unity Catalog Delta "bronze" landing of raw GLEIF XML (Lakebase is the
+only store for now — a real lakehouse-governance story is a natural
+follow-up, not required for the app to work), no Databricks Apps hosting
+for FastAPI/Next.js (still run locally).
+
+**Auth correction (2026-08-25):** this section originally planned a static
+Postgres role/password in `.env`, "matching the security posture this had
+with local Postgres." That never got built — the moment the actual Lakebase
+instance was provisioned, enabling native password auth threw a real
+Databricks warning ("exposes it to the open internet... OAuth-based roles
+are recommended") and it was left disabled. **What's actually running:**
+a Databricks service principal (`relsun-backend`, added to the `relsun`
+workspace, no admin role) mints short-lived OAuth access tokens via the
+`client_credentials` grant (`all-apis` scope — Lakebase has no narrower
+scope yet) against `{DATABRICKS_HOST}/oidc/v1/token`, using
+`DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` in `.env`.
+`app/lakebase_auth.py` caches the token in memory and refetches once
+within 5 minutes of its ~1 hour expiry; `app/db.py`'s engine has a
+`do_connect` hook that calls it on every new physical connection, plus
+`pool_recycle=1800` so pooled connections don't sit on a long-dead token.
+`DATABASE_URL` in `.env` therefore has no password at all — just the
+service principal's Application ID as the username (which is also its
+Postgres role name in Lakebase's Roles & Databases UI) — the real
+credential is minted at connect time, never stored. Scripts that bypass
+SQLAlchemy for raw `psycopg` (`ingest_gleif_entities.py`'s `COPY` load) use
+`lakebase_auth.get_raw_dsn()` instead of building their own DSN, for the
+same reason. Alembic's `env.py` was changed to reuse `app.db.engine`
+rather than building a fresh engine from `alembic.ini` — a separately
+built engine has no `do_connect` hook and fails with "no password
+supplied." This is a stricter posture than the original static-password
+plan, arrived at from a real platform constraint, not a preference.
+
 ## Tech stack
 
-- **Backend:** Python, FastAPI, SQLAlchemy, Postgres 16 + pgvector +
-  pg_trgm (Docker), Neo4j 5 Community (Docker), Alembic migrations
+- **Backend:** Python, FastAPI, SQLAlchemy, **Databricks Lakebase**
+  (managed Postgres-wire-compatible OLTP, Unity Catalog-governed —
+  hosts both master data + the relationship graph; see the Platform
+  pivot note above) with pgvector + pg_trgm extensions, Alembic
+  migrations. ~~Postgres 16 + pgvector + pg_trgm (Docker), Neo4j 5
+  Community (Docker)~~ — superseded 2026-08-24, kept here for history.
 - **Frontend:** Next.js (App Router), TypeScript, Tailwind CSS, lucide-react
   icons, d3-force (custom graph rendering, no charting/graph library)
 - **Embeddings:** sentence-transformers `all-MiniLM-L6-v2`, local, lazy
