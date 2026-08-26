@@ -1,0 +1,15 @@
+command: ['sh', '-c', 'HOSTNAME=0.0.0.0 PORT=$DATABRICKS_APP_PORT sh start.sh']
+
+env:
+  - name: 'DATABASE_URL'
+    value: 'postgresql+psycopg://1f58f264-6b42-48d2-bf2c-635a06301c96@ep-dry-shadow-d2gebshf.database.us-east-1.cloud.databricks.com:5432/databricks_postgres?sslmode=require'
+  - name: 'DATABRICKS_HOST'
+    value: 'https://dbc-6ad4d93f-9639.cloud.databricks.com'
+  - name: 'DATABRICKS_CLIENT_ID'
+    value: '1f58f264-6b42-48d2-bf2c-635a06301c96'
+  - name: 'DATABRICKS_CLIENT_SECRET'
+    valueFrom: 'databricks-client-secret'
+  - name: 'ANTHROPIC_API_KEY'
+    valueFrom: 'anthropic-api-key'
+  - name: 'ANTHROPIC_MODEL'
+    value: 'claude-sonnet-5'
