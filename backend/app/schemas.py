@@ -12,6 +12,15 @@ class SearchResult(BaseModel):
     score: float
 
 
+class MasterRecordDetail(BaseModel):
+    id: int
+    domain: str
+    name: str
+    external_id: str | None
+    attributes: dict[str, Any]
+    created_at: datetime
+
+
 class CompareRecord(BaseModel):
     id: int
     name: str
@@ -45,41 +54,6 @@ class CompareSummaryResponse(BaseModel):
     summary: str
 
 
-class ConciergeChatTurn(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
-class ConciergeChatRequest(BaseModel):
-    prompt: str
-    # Client-held conversation history (the frontend resends it each turn) —
-    # deliberately not server-side persisted memory. Per-agent learning/
-    # persistence is an explicitly open design question in the Agent
-    # Architecture Pivot addendum; this is just enough continuity for a
-    # real back-and-forth chat without prematurely solving that.
-    history: list[ConciergeChatTurn] = []
-
-
-class ConciergeChatResponse(BaseModel):
-    response: str
-
-
-class MasterDataRequestOut(BaseModel):
-    id: int
-    domain: str
-    request_type: Literal["create", "update", "delete"]
-    target_record_id: int | None
-    proposed_attributes: dict[str, Any] | None
-    status: Literal["pending", "approved", "rejected", "published"]
-    decision_note: str | None
-    submitted_at: datetime
-    decided_at: datetime | None
-
-
-class DecideRequestBody(BaseModel):
-    decision_note: str | None = None
-
-
 class GraphNode(BaseModel):
     id: int
     name: str | None
@@ -101,3 +75,62 @@ class GraphResponse(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
     truncated: bool
+
+
+class ConciergeChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ConciergeChatRequest(BaseModel):
+    prompt: str
+    # Client-held conversation history (the frontend resends it each turn) —
+    # deliberately not server-side persisted memory. Per-agent learning/
+    # persistence is an explicitly open design question in the Agent
+    # Architecture Pivot addendum; this is just enough continuity for a
+    # real back-and-forth chat without prematurely solving that.
+    history: list[ConciergeChatTurn] = []
+    # The relationship graph currently rendered on the user's screen, if
+    # any (the frontend sends the exact GraphResponse it already fetched —
+    # see graph_context_agent.py for why this rides along instead of the
+    # agent re-fetching from the DB). None on any non-graph page.
+    graph_context: GraphResponse | None = None
+
+
+class ConciergeChatResponse(BaseModel):
+    response: str
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    role: str | None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: UserOut
+
+
+class MasterDataRequestOut(BaseModel):
+    id: int
+    domain: str
+    request_type: Literal["create", "update", "delete"]
+    target_record_id: int | None
+    proposed_attributes: dict[str, Any] | None
+    status: Literal["pending", "approved", "rejected", "published"]
+    decision_note: str | None
+    submitted_at: datetime
+    decided_at: datetime | None
+    submitted_by: UserOut | None
+    decided_by: UserOut | None
+
+
+class DecideRequestBody(BaseModel):
+    decision_note: str | None = None

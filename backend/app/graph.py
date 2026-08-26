@@ -1,10 +1,8 @@
-from neo4j import GraphDatabase
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from app.config import settings
-
-driver = GraphDatabase.driver(
-    settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
-)
+from app.db import engine
+from app.models import MasterRecord
 
 MAX_HOPS = 3
 DEFAULT_HOPS = 2
@@ -13,76 +11,94 @@ DEFAULT_PATH_LIMIT = 80
 
 def get_relationship_graph(record_id: int, hops: int = DEFAULT_HOPS, limit: int = DEFAULT_PATH_LIMIT) -> dict | None:
     """Return the local relationship neighborhood around one entity: every
-    node and edge reachable within `hops` steps, in any direction, over any
-    relationship type. Deliberately not scoped to :OWNS specifically — a
-    different tenant's data may use entirely different relationship types
-    (SUPPLIES_TO, BELONGS_TO, ...), and this should surface all of them.
+    node and edge reachable within `hops` steps, in any direction, over
+    relationship_edges. Undirected on purpose, same as the Neo4j Cypher this
+    replaced (`-[*1..N]-`, no arrow) — a different tenant's data may care
+    about ownership in either direction from a given anchor.
 
-    Returns None if the record doesn't exist. `hops` is clamped to
-    [1, MAX_HOPS] — Cypher variable-length relationship bounds must be a
-    literal, not a query parameter, so it's interpolated after clamping
-    (safe: it's a validated small int, never raw user text).
+    Returns None if the record doesn't exist. Walked as an iterative BFS
+    (at most `hops` round trips, hops is small and bounded) rather than a
+    single recursive CTE — simpler to bound safely: `limit` caps the total
+    number of *nodes* admitted (not path count, unlike the old Cypher —
+    Postgres has no equivalent of collecting bounded paths in one shot),
+    which is what actually protects against a high-fan-out hub entity
+    (thousands of subsidiaries) blowing up the response.
     """
     hops = max(1, min(hops, MAX_HOPS))
 
-    with driver.session() as session:
-        anchor_result = session.run(
-            "MATCH (n:Entity {master_record_id: $id}) RETURN n", id=record_id
-        ).single()
-        if anchor_result is None:
+    with Session(engine) as session:
+        anchor = session.get(MasterRecord, record_id)
+        if anchor is None or anchor.deleted_at is not None:
             return None
-        anchor = anchor_result["n"]
 
-        # LIMIT bounds the number of expansion rows (one per path) explored
-        # before aggregation, so a high-fan-out hub entity (thousands of
-        # subsidiaries) doesn't return an unusably huge or slow response.
-        result = session.run(
-            f"""
-            MATCH (anchor:Entity {{master_record_id: $id}})
-            OPTIONAL MATCH p = (anchor)-[*1..{hops}]-(other:Entity)
-            WITH p
-            LIMIT $limit
-            RETURN collect(p) AS paths
-            """,
-            id=record_id,
-            limit=limit,
-        ).single()
+        reachable_ids = {record_id}
+        frontier = {record_id}
+        truncated = False
 
-    paths = [p for p in result["paths"] if p is not None]
+        for _ in range(hops):
+            if not frontier:
+                break
+            rows = session.execute(
+                text(
+                    "SELECT parent_id, child_id FROM relationship_edges "
+                    "WHERE parent_id = ANY(:frontier) OR child_id = ANY(:frontier)"
+                ),
+                {"frontier": list(frontier)},
+            ).all()
 
-    nodes_by_id: dict[int, dict] = {
-        anchor["master_record_id"]: _serialize_node(anchor, is_anchor=True)
-    }
-    edges_by_key: dict[tuple, dict] = {}
+            next_frontier: set[int] = set()
+            for parent_id, child_id in rows:
+                next_frontier.add(parent_id)
+                next_frontier.add(child_id)
+            next_frontier -= reachable_ids
 
-    for path in paths:
-        for node in path.nodes:
-            nodes_by_id.setdefault(node["master_record_id"], _serialize_node(node, is_anchor=False))
-        for rel in path.relationships:
-            source_id = rel.start_node["master_record_id"]
-            target_id = rel.end_node["master_record_id"]
-            key = (source_id, target_id, rel.type)
-            edges_by_key[key] = {
-                "source": source_id,
-                "target": target_id,
-                "type": rel.type,
-                "properties": dict(rel),
-            }
+            room = limit - len(reachable_ids)
+            if len(next_frontier) > room:
+                truncated = True
+                next_frontier = set(sorted(next_frontier)[: max(room, 0)])
+
+            reachable_ids |= next_frontier
+            frontier = next_frontier
+
+        edge_rows = session.execute(
+            text(
+                "SELECT parent_id, child_id, is_direct_parent, is_ultimate_parent "
+                "FROM relationship_edges WHERE parent_id = ANY(:ids) AND child_id = ANY(:ids)"
+            ),
+            {"ids": list(reachable_ids)},
+        ).all()
+
+        records = (
+            session.query(MasterRecord)
+            .filter(MasterRecord.id.in_(reachable_ids), MasterRecord.deleted_at.is_(None))
+            .all()
+        )
+
+    nodes = [_serialize_node(record, is_anchor=(record.id == record_id)) for record in records]
+    edges = [
+        {
+            "source": parent_id,
+            "target": child_id,
+            "type": "OWNS",
+            "properties": {"is_direct_parent": is_direct, "is_ultimate_parent": is_ultimate},
+        }
+        for parent_id, child_id, is_direct, is_ultimate in edge_rows
+    ]
 
     return {
         "center_id": record_id,
-        "nodes": list(nodes_by_id.values()),
-        "edges": list(edges_by_key.values()),
-        "truncated": len(paths) >= limit,
+        "nodes": nodes,
+        "edges": edges,
+        "truncated": truncated,
     }
 
 
-def _serialize_node(node, is_anchor: bool) -> dict:
+def _serialize_node(record: MasterRecord, is_anchor: bool) -> dict:
     return {
-        "id": node["master_record_id"],
-        "name": node.get("name"),
-        "domain": node.get("domain"),
-        "lei": node.get("lei"),
+        "id": record.id,
+        "name": record.name,
+        "domain": record.domain,
+        "lei": record.external_id,
         "is_anchor": is_anchor,
-        "existing_customer": bool(node.get("existing_customer", False)),
+        "existing_customer": record.attributes.get("relationship_status") == "existing_customer",
     }

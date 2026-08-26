@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Computed, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Computed, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import TSVECTOR
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIM = 384
 
@@ -46,6 +46,27 @@ class MasterRecord(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RelationshipEdge(Base):
+    """A directed ownership edge between two master_records (parent owns
+    child), replacing the old Neo4j :OWNS relationship — see app/graph.py,
+    which walks this table with a recursive CTE instead of Cypher. A
+    parent/child pair can be both the direct AND ultimate parent (common
+    when there's only one level of ownership), so both bases are flags on
+    the same edge rather than separate rows."""
+
+    __tablename__ = "relationship_edges"
+    __table_args__ = (UniqueConstraint("parent_id", "child_id", name="uq_relationship_edges_parent_child"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parent_id: Mapped[int] = mapped_column(ForeignKey("master_records.id"), index=True)
+    child_id: Mapped[int] = mapped_column(ForeignKey("master_records.id"), index=True)
+    is_direct_parent: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_ultimate_parent: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class WordFrequency(Base):
     """Corpus-wide document frequency per word in master_records.name,
     populated via scripts/refresh_word_frequencies.py using Postgres's own
@@ -57,6 +78,40 @@ class WordFrequency(Base):
 
     word: Mapped[str] = mapped_column(String(255), primary_key=True)
     document_count: Mapped[int] = mapped_column(Integer)
+
+
+class User(Base):
+    """A real, logged-in Relsun user — session-based auth (see app/auth.py),
+    not RBAC: every logged-in user can do everything today, this just
+    gives requests/approvals a real actor identity to record instead of
+    the previous no-auth state. `role` is a display label only (e.g.
+    "Sales Rep"), not an enforcement mechanism."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(100))
+    role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class UserSession(Base):
+    """A server-side, revocable login session — an opaque bearer token the
+    frontend holds, not a JWT, specifically so /auth/logout can actually
+    invalidate it rather than merely having the client discard it."""
+
+    __tablename__ = "user_sessions"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class MasterDataRequest(Base):
@@ -82,6 +137,15 @@ class MasterDataRequest(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Null-able: an agent-submitted request always has a submitter (the
+    # logged-in user chatting with the Concierge), but nothing here forbids
+    # a future non-chat submission path. Two separate FKs, not one
+    # "actor_id" — the submitter and decider are commonly different users
+    # by design (the whole point of the Review Queue).
+    submitted_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    decided_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    submitted_by: Mapped["User | None"] = relationship(foreign_keys=[submitted_by_id])
+    decided_by: Mapped["User | None"] = relationship(foreign_keys=[decided_by_id])
 
 
 class AuditLog(Base):

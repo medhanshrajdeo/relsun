@@ -56,6 +56,7 @@ def submit_request(
     request_type: str,
     target_record_id: int | None = None,
     proposed_attributes: dict | None = None,
+    submitted_by_id: int | None = None,
 ) -> MasterDataRequest:
     if request_type not in REQUEST_TYPES:
         raise RequestValidationError(f"request_type must be one of {sorted(REQUEST_TYPES)}, got {request_type!r}")
@@ -98,6 +99,7 @@ def submit_request(
         proposed_attributes=proposed_attributes,
         status="pending",
         submitted_at=datetime.now(timezone.utc),
+        submitted_by_id=submitted_by_id,
     )
     session.add(request)
     session.flush()  # populate request.id before it's referenced by the log entry
@@ -127,7 +129,9 @@ def _require_pending(session: Session, request_id: int) -> MasterDataRequest:
     return request
 
 
-def approve_request(session: Session, request_id: int, decision_note: str | None = None) -> MasterDataRequest:
+def approve_request(
+    session: Session, request_id: int, decision_note: str | None = None, decided_by_id: int | None = None
+) -> MasterDataRequest:
     """Applies the request's diff to master_records, then marks it
     published. This is the only function in the codebase allowed to turn
     a MasterDataRequest into an actual MasterRecord change — it only
@@ -176,6 +180,7 @@ def approve_request(session: Session, request_id: int, decision_note: str | None
     request.status = "published"
     request.decision_note = decision_note
     request.decided_at = now
+    request.decided_by_id = decided_by_id
     _log(session, request.id, "approved", detail=decision_note)
     _log(session, request.id, "published", detail=applied_detail)
     session.commit()
@@ -183,11 +188,14 @@ def approve_request(session: Session, request_id: int, decision_note: str | None
     return request
 
 
-def reject_request(session: Session, request_id: int, decision_note: str | None = None) -> MasterDataRequest:
+def reject_request(
+    session: Session, request_id: int, decision_note: str | None = None, decided_by_id: int | None = None
+) -> MasterDataRequest:
     request = _require_pending(session, request_id)
     request.status = "rejected"
     request.decision_note = decision_note
     request.decided_at = datetime.now(timezone.utc)
+    request.decided_by_id = decided_by_id
     _log(session, request.id, "rejected", detail=decision_note)
     session.commit()
     session.refresh(request)

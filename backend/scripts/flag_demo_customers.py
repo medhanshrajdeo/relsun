@@ -14,7 +14,6 @@ Run from backend/ with: python -m scripts.flag_demo_customers
 from sqlalchemy.orm import Session
 
 from app.db import engine
-from app.graph import driver
 from app.models import MasterRecord
 
 # LEI -> label, just for the printed confirmation
@@ -33,14 +32,9 @@ def main() -> None:
             .all()
         )
         found_leis = {r.external_id for r in records}
-        with driver.session() as neo_session:
-            for record in records:
-                record.attributes = {**record.attributes, "relationship_status": "existing_customer"}
-                neo_session.run(
-                    "MATCH (n:Entity {master_record_id: $id}) SET n.existing_customer = true",
-                    id=record.id,
-                )
-                print(f"Flagged {record.name} ({record.external_id}) as existing_customer")
+        for record in records:
+            record.attributes = {**record.attributes, "relationship_status": "existing_customer"}
+            print(f"Flagged {record.name} ({record.external_id}) as existing_customer")
 
         session.commit()
 

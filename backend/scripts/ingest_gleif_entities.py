@@ -20,16 +20,12 @@ from pathlib import Path
 import psycopg
 from psycopg.types.json import Json
 
-from app.config import settings
 from app.gleif import iter_entities
+from app.lakebase_auth import get_raw_dsn
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gleif"
 LEVEL1_ZIP = DATA_DIR / "level1.zip"
 LOG_EVERY = 100_000
-
-
-def _raw_dsn() -> str:
-    return settings.database_url.replace("postgresql+psycopg://", "postgresql://")
 
 
 def _attributes(row: dict) -> dict:
@@ -52,9 +48,13 @@ def main() -> None:
         raise SystemExit(f"Missing {LEVEL1_ZIP} — download the Level 1 concatenated file first.")
 
     started = time.monotonic()
-    with psycopg.connect(_raw_dsn()) as conn:
+    with psycopg.connect(get_raw_dsn()) as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE master_records RESTART IDENTITY")
+            # CASCADE also empties relationship_edges (FK'd to
+            # master_records) — correct here since ingest_gleif_relationships
+            # reloads it fresh right after this script per SETUP.md's
+            # ingestion order.
+            cur.execute("TRUNCATE TABLE master_records RESTART IDENTITY CASCADE")
 
         count = 0
         duplicates = 0

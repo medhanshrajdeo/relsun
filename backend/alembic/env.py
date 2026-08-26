@@ -1,11 +1,9 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
 from alembic import context
 
 from app.config import settings
+from app.db import engine
 from app.models import Base
 
 # this is the Alembic Config object, which provides
@@ -53,17 +51,13 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
+    Reuses app.db.engine (rather than building a fresh one from the ini
+    config) so its do_connect hook — which mints a Lakebase OAuth token
+    per connection, since native Postgres password auth is disabled on
+    this project — actually runs. A separately-constructed engine here
+    would connect with no password and fail.
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
+    with engine.connect() as connection:
         context.configure(
             connection=connection, target_metadata=target_metadata
         )

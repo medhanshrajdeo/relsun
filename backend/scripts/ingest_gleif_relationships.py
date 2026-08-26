@@ -1,6 +1,9 @@
 """
-Bulk-load the GLEIF Level 2 (RR-CDF) concatenated file as :OWNS edges in
-Neo4j. Run after load_gleif_graph_nodes.py has populated the :Entity nodes.
+Bulk-load the GLEIF Level 2 (RR-CDF) concatenated file as rows in the
+relationship_edges table (see app/graph.py, which walks this table with a
+BFS instead of Neo4j Cypher). Run after ingest_gleif_entities.py has
+populated master_records — no separate node-loading step needed, edges
+reference master_records.id directly.
 
 Relationships are resolved from LEI to master_record_id in chunks via
 Postgres (indexed on external_id) rather than building one giant in-memory
@@ -11,7 +14,7 @@ there's only one level of ownership, so the direct parent IS the ultimate
 parent) — both bases are recorded as boolean flags on the same edge rather
 than overwriting each other.
 
-Safe to re-run: MERGE is idempotent per (parent, child) pair.
+Safe to re-run: the upsert is idempotent per (parent_id, child_id) pair.
 
 Run from backend/ with: python -m scripts.ingest_gleif_relationships
 """
@@ -25,7 +28,6 @@ from sqlalchemy.orm import Session
 
 from app.db import engine
 from app.gleif import iter_ownership_edges
-from app.graph import driver
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gleif"
 LEVEL2_ZIP = DATA_DIR / "level2.zip"
@@ -43,18 +45,32 @@ def resolve_ids(pg_session: Session, leis: set[str]) -> dict[str, int]:
     return dict(result.all())
 
 
-def write_edges_batch(tx, rows: list[dict]) -> None:
-    tx.run(
-        """
-        UNWIND $rows AS row
-        MATCH (a:Entity {master_record_id: row.parent_id})
-        MATCH (b:Entity {master_record_id: row.child_id})
-        MERGE (a)-[r:OWNS]->(b)
-        SET r.is_direct_parent = coalesce(r.is_direct_parent, false) OR row.basis = 'direct',
-            r.is_ultimate_parent = coalesce(r.is_ultimate_parent, false) OR row.basis = 'ultimate'
-        """,
-        rows=rows,
+def write_edges_batch(pg_session: Session, rows: list[dict]) -> None:
+    # ON CONFLICT DO UPDATE with OR-in-place flags mirrors the old Neo4j
+    # MERGE + `coalesce(r.is_direct_parent, false) OR row.basis = 'direct'`
+    # logic: a pair seen once as "direct" and again as "ultimate" ends up
+    # with both flags true, not the second write clobbering the first.
+    pg_session.execute(
+        text(
+            """
+            INSERT INTO relationship_edges (parent_id, child_id, is_direct_parent, is_ultimate_parent, created_at)
+            VALUES (:parent_id, :child_id, :is_direct, :is_ultimate, now())
+            ON CONFLICT (parent_id, child_id) DO UPDATE SET
+                is_direct_parent = relationship_edges.is_direct_parent OR EXCLUDED.is_direct_parent,
+                is_ultimate_parent = relationship_edges.is_ultimate_parent OR EXCLUDED.is_ultimate_parent
+            """
+        ),
+        [
+            {
+                "parent_id": row["parent_id"],
+                "child_id": row["child_id"],
+                "is_direct": row["basis"] == "direct",
+                "is_ultimate": row["basis"] == "ultimate",
+            }
+            for row in rows
+        ],
     )
+    pg_session.commit()
 
 
 def main() -> None:
@@ -66,7 +82,7 @@ def main() -> None:
     written = 0
     skipped = 0
 
-    with Session(engine) as pg_session, driver.session() as neo_session, zipfile.ZipFile(LEVEL2_ZIP) as z:
+    with Session(engine) as pg_session, zipfile.ZipFile(LEVEL2_ZIP) as z:
         with z.open(z.namelist()[0]) as f:
             batch: list[dict] = []
 
@@ -85,7 +101,7 @@ def main() -> None:
                         continue
                     rows.append({"parent_id": parent_id, "child_id": child_id, "basis": edge["basis"]})
                 if rows:
-                    neo_session.execute_write(write_edges_batch, rows)
+                    write_edges_batch(pg_session, rows)
                     written += len(rows)
                 batch.clear()
 
