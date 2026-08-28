@@ -147,10 +147,11 @@ that way).
   built engine has no `do_connect` hook and fails with "no password
   supplied."
 - **Not done as part of this pivot** (flagged, not built): no Unity
-  Catalog Delta "bronze" landing of raw GLEIF XML, no Databricks Apps
-  hosting for FastAPI/Next.js at the time of the migration itself (that
-  followed separately — see the auth-header note in §8a; `backend/app.yaml`
-  and `deploy-combined/` are the in-progress hosting work).
+  Catalog Delta "bronze" landing of raw GLEIF XML. Databricks Apps hosting
+  for FastAPI/Next.js followed separately and **is now live** — one
+  combined app, browser-verified 2026-08-27; see **§8b** and
+  `deploy-combined/DEPLOY.md`. (`backend/app.yaml` is the retired
+  two-app config.)
 
 ---
 
@@ -1036,6 +1037,134 @@ as someone else, approve from the Review Queue).
 
 ---
 
+## 8b. Databricks Apps Hosting (built 2026-08-26, browser-verified 2026-08-27)
+
+Full detail lives in [`deploy-combined/DEPLOY.md`](./deploy-combined/DEPLOY.md);
+this is the summary.
+
+**One app, both halves.** Relsun runs as a single Databricks App
+`relsun-frontend` (`https://relsun-frontend-7474659130414957.aws.databricksapps.com`).
+`start.sh` runs `uvicorn app.main:app` on `127.0.0.1:8001` in the
+background and `exec`s `node server.js` (Next.js standalone) on
+`$DATABRICKS_APP_PORT`. `next.config.ts` rewrites proxy `/auth /search
+/compare /concierge /requests /graph /domains /health /master-records`
+from the Next server to FastAPI on `:8001` — that hop stays inside the
+container, so Databricks' per-app OAuth SSO gate never sees it. The
+earlier two-app split (`relsun-backend` + `relsun-frontend`) is dead: a
+browser `fetch` from one app to another can't complete the SSO redirect.
+
+### 8b.1 Starting the app for a demo (the runbook)
+
+**If it's already running:** open
+`https://relsun-frontend-7474659130414957.aws.databricksapps.com`.
+Workspace SSO logs you in, then the Relsun login takes `alice`/`alice123`
+or `bob`/`bob123`. Nothing else to do.
+
+**If it's been idle (the usual case — compute auto-stops to save money):**
+
+- *CLI (fastest, one command):*
+  `databricks apps start relsun-frontend --profile relsun` — starts compute
+  **and** redeploys in one step. Then
+  `databricks apps get relsun-frontend --profile relsun` until
+  `app_status.state` is `RUNNING`.
+- *Portal:* workspace URL → left sidebar **Compute → Apps** (or search
+  `relsun-frontend`) → open the app → if status is *Stopped*/*Unavailable*,
+  click **Deploy** (source-code path is pre-filled:
+  `/Workspace/Users/medhanshrajdeo@gmail.com/relsun-frontend`) → watch the
+  **Deployments** tab for *"App started successfully"*.
+
+Either way the build takes **~6 minutes** (it downloads PyTorch for the
+search embeddings). **Budget ~10 min before a demo** if the app has sat
+unused. Then smoke-test: log in as `alice`, search "Hanger", open the
+graph on The Boeing Company.
+
+**Sharing with another person:** they must be a user in this Databricks
+workspace (add them under **Settings → Identity and access → Users** —
+needs workspace-admin). Then on the `relsun-frontend` app page →
+**Permissions** → add their email → **Can use**. Send them the app URL;
+they hit Databricks SSO first, then the Relsun `alice`/`bob` login.
+
+**Checking status without the portal:**
+`databricks apps get relsun-frontend --profile relsun -o json` — look at
+`app_status.state` (want `RUNNING`) and `active_deployment.status.state`
+(want `SUCCEEDED`). `databricks apps logs relsun-frontend --profile relsun`
+streams the build + runtime log.
+
+### 8b.2 Rebuild + redeploy (only when frontend/backend code changed)
+
+1. `bash deploy-combined/build.sh` — rebuilds the bundle from `frontend/` +
+   `backend/` source with `NEXT_PUBLIC_API_BASE_URL=same-origin`, and fails
+   if `localhost:8000` leaks into the client bundle.
+2. `MSYS_NO_PATHCONV=1 databricks sync --full deploy-combined <ws-path>
+   --profile relsun --include '.next/**' --include 'node_modules/**'` — the
+   two `--include` flags are **mandatory**: `databricks sync` honours the
+   repo-root `.gitignore` (which ignores `.next/` and `node_modules/`), so
+   without them it silently skips the whole built frontend and you
+   redeploy the old bundle.
+3. `MSYS_NO_PATHCONV=1 databricks apps deploy relsun-frontend
+   --source-code-path <ws-path> --profile relsun`.
+4. Sanity check before/after:
+   `databricks workspace export <ws-path>/.next/BUILD_ID` must equal
+   `cat deploy-combined/.next/BUILD_ID`.
+
+`server.js`, `.next/`, `node_modules/`, `public/` in `deploy-combined/` are
+build output — never hand-edit them; edit `app/`, `alembic/`, `scripts/`,
+`requirements.txt`, `app.yaml`, `start.sh`.
+**`deploy-combined/package.json` is special:** keep it minimal with **no
+`scripts` block** — Databricks Apps' Node buildpack runs `scripts.build` if
+present, and the standalone `package.json` Next emits carries
+`"build": "next build"`, which then dies server-side against the pruned
+`node_modules` (`Can't resolve 'react-dom/client'`). `build.sh` leaves this
+file alone and asserts it has no `"build"` key.
+
+### 8b.3 Idle auto-stop
+
+On the current tier the App's compute stops after inactivity, and that
+*clears the active deployment* — it needs a redeploy, not just a restart.
+`databricks apps start relsun-frontend` does both. An error in the browser
+after the app has sat unused is almost always this, **not** a data or code
+problem.
+
+### 8b.4 Lakebase visibility gotcha
+
+`databricks database list-database-instances` returns empty and
+`get-database-instance relsun-db` says "Resource not found" even while
+Lakebase is perfectly healthy — that CLI view just doesn't surface this
+instance. Check DB health by connecting (mint an OAuth token via the
+`relsun-backend` service principal, `psycopg.connect` to the endpoint in
+`DATABASE_URL`), never by trusting that listing. As of 2026-08-27 the DB
+holds ~3.4M `master_records` and ~169K `relationship_edges`, intact.
+
+### 8b.5 The `NEXT_PUBLIC_API_BASE_URL` regression (fixed 2026-08-27)
+
+The first browser test of the deployed app failed every API call:
+`POST http://localhost:8000/auth/login` → 503, "Failed to fetch" on the
+login page. `NEXT_PUBLIC_*` vars are inlined into the JS bundle **at build
+time**; the bundle had been built with `frontend/.env.local` setting
+`NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` (the right *local dev*
+value), so every visitor's browser called *its own* localhost instead of
+a same-origin path. `app.yaml` env can't fix an already-inlined literal.
+Fixed in three layers so it can't come back: (1) committed
+`frontend/.env.production` = `same-origin` (and `.env.development` =
+`localhost:8000`; the uncommitted `.env.local` that overrode both was
+deleted); (2) `deploy-combined/build.sh` passes `same-origin` inline and
+greps the output for `localhost:8000`, failing the build if found; (3)
+`frontend/src/lib/api.ts` falls back to same-origin at runtime whenever
+it's in a browser on a non-`localhost` host. Sanity check for any future
+build: `grep -r localhost:8000 deploy-combined/.next/static` returns
+nothing.
+
+### 8b.6 Verification status
+
+Verified in a real browser 2026-08-27: `POST /auth/login` returns 200
+same-origin (no more `localhost:8000`), `/health` reports the DB
+connected, login as `alice` works, Master Data Search does live fuzzy
+matching, the relationship graph renders, and the Concierge agent chat
+answers end-to-end (Concierge → Master Data → Search → live Anthropic API
+→ live Lakebase) with clickable `[Name](record:ID)` links.
+
+---
+
 ## 9. Master Data Requests (the approval workflow)
 
 **Route:** `/mdm/requests` (the Review Queue) · **Endpoints:** `GET
@@ -1332,4 +1461,7 @@ worth remembering as a pattern for whatever gets built next.
   modules, including everything unbuilt.
 - `DATA_STRATEGY.md` — the full data-loading philosophy and what's
   actually been executed vs. deferred (SEC EDGAR, UK Companies House).
+- `deploy-combined/DEPLOY.md` — Databricks Apps hosting in full: the
+  one-app architecture, `build.sh`, the exact sync/deploy commands, and
+  the two deploy-pipeline traps (see also §8b).
 - `Relsun_Initial slides.pdf` — the founders' original wireframe deck.

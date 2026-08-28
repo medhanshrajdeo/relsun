@@ -32,6 +32,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...opted in: these two carry no secrets and MUST travel with the repo so
+# `next dev` and `next build` are correct by default. A personal, secret,
+# or machine-specific value still goes in an (ignored) .env.local.
+!.env.development
+!.env.production
 
 # vercel
 .vercel

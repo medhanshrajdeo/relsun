@@ -54,6 +54,29 @@ class CompareSummaryResponse(BaseModel):
     summary: str
 
 
+class GraphNode(BaseModel):
+    id: int
+    name: str | None
+    domain: str | None
+    lei: str | None
+    is_anchor: bool
+    existing_customer: bool
+
+
+class GraphEdge(BaseModel):
+    source: int
+    target: int
+    type: str
+    properties: dict[str, Any]
+
+
+class GraphResponse(BaseModel):
+    center_id: int
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+    truncated: bool
+
+
 class ConciergeChatTurn(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -67,6 +90,11 @@ class ConciergeChatRequest(BaseModel):
     # Architecture Pivot addendum; this is just enough continuity for a
     # real back-and-forth chat without prematurely solving that.
     history: list[ConciergeChatTurn] = []
+    # The relationship graph currently rendered on the user's screen, if
+    # any (the frontend sends the exact GraphResponse it already fetched —
+    # see graph_context_agent.py for why this rides along instead of the
+    # agent re-fetching from the DB). None on any non-graph page.
+    graph_context: GraphResponse | None = None
 
 
 class ConciergeChatResponse(BaseModel):
@@ -106,26 +134,3 @@ class MasterDataRequestOut(BaseModel):
 
 class DecideRequestBody(BaseModel):
     decision_note: str | None = None
-
-
-class GraphNode(BaseModel):
-    id: int
-    name: str | None
-    domain: str | None
-    lei: str | None
-    is_anchor: bool
-    existing_customer: bool
-
-
-class GraphEdge(BaseModel):
-    source: int
-    target: int
-    type: str
-    properties: dict[str, Any]
-
-
-class GraphResponse(BaseModel):
-    center_id: int
-    nodes: list[GraphNode]
-    edges: list[GraphEdge]
-    truncated: bool

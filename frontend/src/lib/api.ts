@@ -1,11 +1,30 @@
-// "same-origin" (rather than an empty string) is the deliberate way to say
-// "call this page's own origin, no backend host prefix" — Next.js's build
-// silently treats an *empty* NEXT_PUBLIC_ value as unset and falls through
-// to hardcoded defaults regardless of how the empty string is supplied
-// (shell env var, .env.production with a blank value), so an empty string
-// can't be used as the "same origin" signal here.
+// How the browser reaches the API. Priority:
+//   1. NEXT_PUBLIC_API_BASE_URL="same-origin"  -> "" (call this page's own
+//      origin, no host prefix). "same-origin" rather than an empty string
+//      because Next's build treats an *empty* NEXT_PUBLIC_ value as unset
+//      and falls through to the default regardless of how it's supplied.
+//   2. NEXT_PUBLIC_API_BASE_URL=<some url>     -> use it verbatim.
+//   3. no build-time value, but running in a browser on a NON-localhost
+//      host (i.e. a real deployment) -> "" (same-origin). This is the
+//      permanent safety net: a deploy build that somehow lost the env var
+//      still must never make the visitor's browser call the developer's
+//      localhost:8000. Regression history: a deploy shipped with the dev
+//      value baked in and every API call 503'd against localhost — see
+//      deploy-combined/DEPLOY.md.
+//   4. otherwise (local dev) -> the local FastAPI backend.
 const rawApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-export const API_BASE_URL = rawApiBaseUrl === "same-origin" ? "" : rawApiBaseUrl ?? "http://localhost:8000";
+
+function resolveApiBaseUrl(): string {
+  if (rawApiBaseUrl === "same-origin") return "";
+  if (rawApiBaseUrl) return rawApiBaseUrl;
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host !== "localhost" && host !== "127.0.0.1" && host !== "0.0.0.0") return "";
+  }
+  return "http://localhost:8000";
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
 
 // Module-level, not React state: api.ts is a plain fetch layer with no
 // component of its own, so the current session token/401 handler live

@@ -163,7 +163,11 @@ def concierge_chat(
     try:
         response = concierge_agent.run(
             body.prompt,
-            context={"session": session, "current_user_id": user.id},
+            context={
+                "session": session,
+                "current_user_id": user.id,
+                "graph_context": body.graph_context.model_dump() if body.graph_context else None,
+            },
             history=[turn.model_dump() for turn in body.history],
         )
     except AgentNotConfiguredError as exc:

@@ -114,7 +114,6 @@ class Agent:
                 tools=tool_schemas,
                 messages=messages,
             )
-
             # A server tool (e.g. web search) can hit its own iteration limit
             # mid-turn with no client tool awaiting a result — Claude hasn't
             # produced a final answer yet, just paused. Re-send as-is so it

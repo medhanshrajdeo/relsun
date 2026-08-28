@@ -254,8 +254,22 @@ which now documents Lakebase provisioning as its own step.
 Explicitly **not** done as part of this pivot (flagged, not built): no
 Unity Catalog Delta "bronze" landing of raw GLEIF XML (Lakebase is the
 only store for now — a real lakehouse-governance story is a natural
-follow-up, not required for the app to work), no Databricks Apps hosting
-for FastAPI/Next.js (still run locally).
+follow-up, not required for the app to work).
+
+**Databricks Apps hosting (added 2026-08-26, browser-verified 2026-08-27):**
+now live — FastAPI + Next.js deploy as **one** Databricks App
+(`relsun-frontend`), both processes in one container, Next.js proxying API
+paths to FastAPI on `127.0.0.1:8001` so the per-app OAuth SSO gate never
+sees the hop. Build/deploy is `bash deploy-combined/build.sh` →
+`databricks sync --full` → `databricks apps deploy`. Full detail in
+`deploy-combined/DEPLOY.md` and `RELSUN_HANDBOOK.md` §8b, including the
+`NEXT_PUBLIC_API_BASE_URL` build-time-inlining bug that made the first
+browser test 503 against `localhost:8000` and the three-layer fix for it.
+Two operational gotchas worth knowing: (1) idle auto-stop clears the
+active deployment, so a stopped app needs `databricks apps start` (which
+redeploys), not just a restart; (2) `databricks database
+list-database-instances` shows empty even when Lakebase is healthy —
+verify the DB by connecting, never by that listing.
 
 **Auth correction (2026-08-25):** this section originally planned a static
 Postgres role/password in `.env`, "matching the security posture this had
